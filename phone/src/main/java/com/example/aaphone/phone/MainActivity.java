@@ -2,6 +2,7 @@ package com.example.aaphone.phone;
 
 import android.app.Activity;
 import android.content.Intent;
+import android.graphics.Color;
 import android.hardware.usb.UsbAccessory;
 import android.hardware.usb.UsbManager;
 import android.os.Bundle;
@@ -40,6 +41,13 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         statusView = new TextView(this);
+        // Explicit color/size/padding rather than relying on inherited theme
+        // defaults -- rules out an invisible-text-on-matching-background cause
+        // if status updates ever again look like they're "doing nothing".
+        statusView.setTextColor(Color.BLACK);
+        statusView.setBackgroundColor(Color.WHITE);
+        statusView.setTextSize(18f);
+        statusView.setPadding(32, 32, 32, 32);
         statusView.setText("Waiting for head unit…");
         setContentView(statusView);
         handleAccessoryIntent(getIntent());
@@ -66,12 +74,21 @@ public class MainActivity extends Activity {
             return;
         }
 
-        UsbAccessoryTransport transport = new UsbAccessoryTransport(this, accessory);
+        // Everything past this point was previously uncaught: if it threw (e.g.
+        // openAccessory() returning null), the exception propagated straight out
+        // of onCreate/onNewIntent and crashed the activity -- silently, before
+        // any of the status text below ever had a chance to show. That's the
+        // most likely explanation if status updates ever appear to "do nothing".
+        try {
+            UsbAccessoryTransport transport = new UsbAccessoryTransport(this, accessory);
 
-        statusView.setText("Opened accessory: " + accessory.getManufacturer() + " / " + accessory.getModel()
-            + " (connected=" + transport.isConnected() + ") -- starting handshake...");
+            statusView.setText("Opened accessory: " + accessory.getManufacturer() + " / " + accessory.getModel()
+                + " (connected=" + transport.isConnected() + ") -- starting handshake...");
 
-        new Thread(() -> runHandshake(transport), "aa-handshake").start();
+            new Thread(() -> runHandshake(transport), "aa-handshake").start();
+        } catch (Exception e) {
+            statusView.setText("Failed to open accessory: " + e);
+        }
     }
 
     private void runHandshake(UsbAccessoryTransport transport) {
