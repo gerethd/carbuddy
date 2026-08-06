@@ -44,11 +44,19 @@ channel) before moving to the next, rather than wiring the full stack at once.
 - [ ] **#1** Validate protocol work against the real in-vehicle head unit,
       stage by stage (see above).
 - [ ] **#2** Port `FrameHeader` byte layout and channel-id numbering from
-      aasdk — now sourced, see 0003. Remaining work: fix `ChannelId.kt` to
+      aasdk — now sourced, see 0003. Remaining work: fix `ChannelId.java` to
       only hardcode `CONTROL = 0` and read every other channel's real id
       from the head unit's `ServiceDiscoveryResponse` at connection time.
-- [ ] **#3** Port `AaHandshake`'s SSL handshake sequence from aasdk.
-- [ ] **#4** Implement `ChannelMultiplexer.sendMessage`/`pumpOnce` for real.
+- [~] **#3** Port `AaHandshake`'s SSL handshake sequence from aasdk —
+      **implemented** (version exchange, TLS handshake via `SSLEngine` in
+      server mode, `AUTH_COMPLETE` receipt), backed by new `FrameCodec`/
+      `AaServerIdentity` classes and unit-tested against the real captured
+      `VERSION_REQUEST` bytes. **Not yet validated end-to-end against the
+      real head unit** — that's the next in-vehicle test.
+- [ ] **#4** Implement `ChannelMultiplexer.sendMessage`/`pumpOnce` for real —
+      can now reuse `FrameCodec`; also needs to use the handshake's
+      established `SSLEngine` to encrypt/decrypt traffic once
+      `AUTH_COMPLETE` is received.
 - [ ] **#5** Minimal `VideoChannel`/`AudioChannel` — a single static frame and
       silence are enough; head units require *some* video stream to
       negotiate before other channels are usable.

@@ -35,15 +35,26 @@ Flags byte bit assignment (confirmed from `FrameType.hpp`/`EncryptionType.hpp`/`
 This matches the general shape flagged as unverified in our original
 `FrameHeader.kt` — now confirmed rather than guessed.
 
-## Frame size (partially confirmed)
+## Frame size (now fully confirmed, from `FrameSize.cpp`/`MessageInStream.cpp`)
 
-`FrameSizeType` has two variants, `SHORT` and `EXTENDED` — confirmed to
-exist, but their exact byte widths weren't in the header we read (only in
-the `.cpp`, not yet fetched). Public convention for this protocol style is
-2 bytes for `SHORT` (this frame's payload length) and a longer form for
-`EXTENDED` that also carries the total reassembled message length when the
-`FIRST` flag is set — **treat this specific byte width as still unconfirmed**
-until the `.cpp` is read, unlike the frame header/flags above.
+- `SHORT` = 2 bytes: `frameSize` as big-endian `uint16`.
+- `EXTENDED` = 6 bytes: `frameSize` (big-endian `uint16`) + `totalSize`
+  (big-endian `uint32`).
+- Which one is used is decided by `MessageInStream`:
+  `FrameSize::getSizeOf(frameHeader.getType() == FrameType::FIRST ? EXTENDED : SHORT)`.
+  Critically, this is a check against `FrameType::FIRST` **exactly** (value
+  `1`), not "is the FIRST bit set" — so `BULK` (`FIRST|LAST` = `3`, a
+  complete single-frame message) does **not** get the extended form, only a
+  true "more fragments coming" first-of-many frame does. This exactly
+  explains our own empirical capture below: the `VERSION_REQUEST` frame had
+  flags `0x03` (`BULK`) and used the 2-byte `SHORT` form, which is why
+  header(2) + size(2) + payload(6) added up to exactly 10 bytes with nothing
+  left over.
+- Fragment reassembly: `MessageInStream` loops — read header, read
+  size (`SHORT` or `EXTENDED` per the rule above), read that many payload
+  bytes, decrypt if needed, append to the accumulating message — until
+  `recentFrameType_` is `BULK` or `LAST`, at which point the message is
+  complete and dispatched.
 
 ## Message ID
 
@@ -112,12 +123,31 @@ source skips them, presumably deprecated/reserved.)
 
 ## Handshake sequence, tied to the above
 
-1. **Version request/response** (`VERSION_REQUEST`/`VERSION_RESPONSE`, both `CONTROL`, unencrypted). No `.proto` exists for these — the payload is raw bytes, not protobuf. Exact byte layout (which half is major/minor, endianness) is **not confirmed** from what we've read yet; only that it isn't protobuf-encoded. `VersionResponseStatusEnum.proto` gives the outcome values: `MATCH = 0`, `MISMATCH = 0xFFFF`.
-2. **SSL handshake** (`SSL_HANDSHAKE`, `CONTROL`, unencrypted framing carrying encrypted-handshake bytes) — both sides exchange these until the TLS session establishes. Confirmed from `Cryptor.hpp`: this is backed by OpenSSL memory `BIO`s (`doHandshake()`, `readHandshakeBuffer()`/`writeHandshakeBuffer()`) rather than a plain `SSLSocket` — matches what we suspected, now confirmed. `Cryptor` also references a hardcoded certificate/key pair (`cCertificate`/`cPrivateKey` constants) — **values live in the `.cpp`, not yet fetched**; needed before `AaHandshake` can actually complete a handshake.
-3. **Auth complete** (`AUTH_COMPLETE`) — `AuthCompleteIndication{status: Status.Enum}` (`OK = 0` / `FAIL = 1`). Whether this specific message is sent plain or already inside the encrypted session is **not confirmed** yet.
-4. **Service discovery** — we (phone) send `ServiceDiscoveryRequest{device_name (field 4), device_brand (field 5)}`. Note the gap: fields 1–3 don't exist in this message — likely deprecated across protocol versions, not a transcription error.
+Message **direction** below is confirmed from which side of aasdk's own
+code each message lives in — `ControlServiceChannel.cpp` is aasdk's
+head-unit-role implementation, so a method that *sends* a message there
+means the real head unit sends it to the phone, and vice versa.
+
+1. **Version request/response** (`VERSION_REQUEST`/`VERSION_RESPONSE`, both `CONTROL`, unencrypted). No `.proto` exists for these — confirmed raw bytes, not protobuf, from `ControlServiceChannel.cpp`:
+   - **Head unit → phone**: `VersionRequest` body, 4 bytes — `major` (big-endian `uint16`), `minor` (big-endian `uint16`). Matches our own empirical capture exactly (major=1, minor=7) — that was a correct read, not a lucky guess.
+   - **Phone → head unit**: `VersionResponse` body, 6 bytes — `major`, `minor` (same as above), then `status` (big-endian `uint16`, values from `VersionResponseStatusEnum`: `MATCH = 0`, `MISMATCH = 0xFFFF`). We mirror the head unit's own version back with `MATCH`, having no independent basis to claim otherwise.
+2. **SSL handshake** (`SSL_HANDSHAKE`, `CONTROL`, unencrypted *framing* carrying the TLS bytes themselves — the framing isn't encrypted, the payload already is by virtue of being raw TLS record bytes) — both sides send/receive these as the handshake progresses. Confirmed from `Cryptor.cpp`:
+   - **aasdk (head unit) is the TLS *client*** (`sslWrapper_->setConnectState(ssl_)`) — meaning **the real head unit is the TLS client, and the phone (us) is the TLS *server***. Backed by OpenSSL memory `BIO`s (`doHandshake()`/`readHandshakeBuffer()`/`writeHandshakeBuffer()`), not a plain socket — confirmed, matches what we suspected.
+   - aasdk's certificate/key (`cCertificate`/`cPrivateKey`, CN "Google Automotive Linux") is the **head unit's own identity** for its client role — not something to copy for our server role. We generated our own, unrelated self-signed identity instead (see `AaServerIdentity`).
+3. **Auth complete** (`AUTH_COMPLETE`) — **head unit → phone** (`sendAuthComplete` lives in aasdk's head-unit code), `AuthCompleteIndication{status: Status.Enum}` (`OK = 0` / `FAIL = 1`), confirmed sent `PLAIN` (unencrypted) — i.e. this is the last plain-framed message before the established session is used for everything after.
+4. **Service discovery** — phone → head unit: `ServiceDiscoveryRequest{device_name (field 4), device_brand (field 5)}`. Note the gap: fields 1–3 don't exist in this message — likely deprecated across protocol versions, not a transcription error.
 5. Head unit responds `ServiceDiscoveryResponse` with: `channels` (repeated `ChannelDescriptor`), `head_unit_name`, `car_model`/`car_year`/`car_serial`, `left_hand_drive_vehicle`, `headunit_manufacturer`/`headunit_model`, `sw_build`/`sw_version`, `can_play_native_media_during_vr`, `hide_clock`. Each `ChannelDescriptor` has `channel_id` (the *real* negotiated id) plus exactly one of `sensor_channel`/`av_channel`/`input_channel`/`av_input_channel`/`bluetooth_channel`/`navigation_channel`/`vendor_extension_channel` describing that channel's config.
 6. For each channel we want to use: `CHANNEL_OPEN_REQUEST{priority, channel_id}` → `CHANNEL_OPEN_RESPONSE{status: Status.Enum}`.
+
+## Implementation (task #3)
+
+`AaHandshake` implements steps 1–3 above:
+
+- `FrameCodec` (new, shared with future `ChannelMultiplexer` work) encodes/decodes frames per the confirmed layout, including real FIRST/MIDDLE/LAST reassembly on read.
+- `AaServerIdentity` builds the phone's TLS server `SSLContext` from a freshly-generated, project-specific self-signed cert/key (not aasdk's).
+- The TLS handshake itself is driven with `javax.net.ssl.SSLEngine` in server mode (`setUseClientMode(false)`) — the standard Java API for exactly this "drive TLS over arbitrary framing, not a real socket" case.
+- **Android-specific gotcha found while wiring this up**: Android's `SSLEngineResult.HandshakeStatus` has no `NEED_UNWRAP_AGAIN` (a newer-JDK-only addition) — the retry-with-already-buffered-bytes case has to be handled by simply not advancing the loop's status variable on `BUFFER_UNDERFLOW`, rather than relying on that status value.
+- Not yet exercised against a real head unit end-to-end — `FrameCodecTest` covers the framing logic (including a direct regression test against the real captured `VERSION_REQUEST` bytes) with a fake in-memory transport, but the TLS handshake itself has only been validated by compiling, not by a real handshake completing.
 
 ## USB accessory mode query sequence (already empirically validated in the vehicle)
 
@@ -156,10 +186,46 @@ UI's layout, not a channel-level integration. `NavigationChannel` is
 unaffected — `navigation_channel` is confirmed as a first-class channel type
 with its own focus-request/response messages (`NavigationFocusRequestMessage.proto`/`NavigationFocusResponseMessage.proto`, control message ids `0x000d`/`0x000e`).
 
-## Still unconfirmed / needs the `.cpp` sources, not just headers/protos
+## Still unconfirmed
 
-- Exact `FrameSize` byte widths for `SHORT` vs `EXTENDED`.
-- Version request/response raw byte layout.
-- Whether `AUTH_COMPLETE` is sent plain or encrypted.
-- The actual certificate/private key `Cryptor` uses (`cCertificate`/`cPrivateKey` values).
-- Exact accessory-mode string values beyond the manufacturer/model pair we already validated empirically.
+- Exact accessory-mode string values beyond the manufacturer/model pair we already validated empirically (in `AccessoryModeQueryFactory.cpp`/`AccessoryModeSendStringQuery.cpp`) — not needed for our current milestone since Android's OS drives that exchange, not our app code.
+- The still-unresolved `MessageType::CONTROL` flag discrepancy noted above (empirically unset on a real `VERSION_REQUEST`).
+- Whether our self-signed TLS server identity (see Implementation, above) is actually acceptable to a real head unit — no CA chain validation is confirmed, but whether the head unit inspects certificate contents any further than that is untested.
+
+Everything else previously listed here — `FrameSize` byte widths, version
+request/response byte layout, whether `AUTH_COMPLETE` is plain or encrypted,
+and the head unit's certificate/key — is now confirmed above, straight from
+`FrameSize.cpp`, `MessageInStream.cpp`, `ControlServiceChannel.cpp`, and
+`Cryptor.cpp` (the last one turned out not to be reusable for our side
+anyway — see the SSL handshake entry above).
+
+## Empirical observation from the real head unit
+
+First bytes read off the transport on accessory attach (corrected capture —
+an earlier pass missed 2 bytes): `[0, 3, 0, 6, 0, 1, 0, 1, 0, 7]`.
+
+Parse against the confirmed `FrameHeader` layout — this one is a **complete**
+message, not a partial read:
+
+| Bytes | Field | Value |
+|---|---|---|
+| `0` | `channel_id` | `0` = `CONTROL` |
+| `3` | flags | `0x03` = FIRST\|LAST (single-frame). Bit2 (`MessageType::CONTROL`) and bit3 (`ENCRYPTED`) both unset. |
+| `0, 6` | frame size, assumed `SHORT` (2 bytes) | `6` — payload length |
+| `0, 1` | payload bytes 1–2, assumed `MessageId` | `0x0001` = **`VERSION_REQUEST`** |
+| `0, 1, 0, 7` | payload bytes 3–6, assumed version body | major=`1`, minor=`7` (major-then-minor order is still an assumption) |
+
+Header(2) + size(2) + exactly 6 payload bytes = 10 bytes total, matching the
+declared size exactly — confirms the `FrameSize` = `SHORT`/2-byte-big-endian
+assumption too, at least for this message. The `MessageId` match is a strong
+signal: this is genuinely the head unit's opening `VERSION_REQUEST`, right
+where the protocol notes predicted, requesting protocol version 1.7.
+
+**Open discrepancy, still unresolved (independent of the above)**: this
+message is unambiguously a control/administrative message, but flags bit2
+(`MessageType::CONTROL`, expected set for control-channel administrative
+traffic per the header names) is *not* set — bit pattern reads `SPECIFIC`.
+Either the CONTROL/SPECIFIC distinction doesn't mean what the enum names
+suggest, or something else is going on. Needs the `.cpp`
+(`ControlServiceChannel.cpp`/`Messenger.cpp`), not more header-reading, to
+resolve — recorded here rather than papered over with a guess.
