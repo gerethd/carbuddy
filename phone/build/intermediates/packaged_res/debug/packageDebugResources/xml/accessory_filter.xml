@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      These manufacturer/model strings must match what the head unit sends
+      during the AOA "start accessory" control transfer. The values below
+      match those used by existing open-source head-unit implementations
+      (aasdk / OpenAuto / f1x's headunit) when acting as the AA host —
+      verify against that source before relying on this in the field, since
+      exact strings can vary by head unit firmware and Google has changed
+      protocol details across AA versions.
+    -->
+    <usb-accessory manufacturer="Android" model="Android Auto" />
+</resources>

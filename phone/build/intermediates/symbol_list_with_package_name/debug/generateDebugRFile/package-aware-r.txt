@@ -1,0 +1,3 @@
+com.example.aaphone.phone
+string app_name
+xml accessory_filter
