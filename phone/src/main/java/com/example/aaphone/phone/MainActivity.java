@@ -5,7 +5,9 @@ import android.content.Intent;
 import android.graphics.Color;
 import android.hardware.usb.UsbAccessory;
 import android.hardware.usb.UsbManager;
+import android.os.Build;
 import android.os.Bundle;
+import android.view.Gravity;
 import android.widget.TextView;
 
 import com.example.aaphone.protocol.handshake.AaHandshake;
@@ -41,14 +43,21 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         statusView = new TextView(this);
-        // Explicit color/size/padding rather than relying on inherited theme
-        // defaults -- rules out an invisible-text-on-matching-background cause
-        // if status updates ever again look like they're "doing nothing".
-        statusView.setTextColor(Color.BLACK);
-        statusView.setBackgroundColor(Color.WHITE);
-        statusView.setTextSize(18f);
+        // Deliberately garish and maximally unmissable -- rules out any subtle
+        // color/contrast/force-dark cause if this still doesn't show. If THIS
+        // doesn't render, the problem is the Activity/window itself, not the
+        // choice of colors.
+        statusView.setTextColor(Color.WHITE);
+        statusView.setBackgroundColor(Color.RED);
+        statusView.setTextSize(32f);
+        statusView.setGravity(Gravity.CENTER);
         statusView.setPadding(32, 32, 32, 32);
-        statusView.setText("Waiting for head unit…");
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            // Rule out Android's force-dark feature reinterpreting our explicit
+            // colors on a device in system dark mode.
+            statusView.setForceDarkAllowed(false);
+        }
+        statusView.setText("AA PHONE TEST SCREEN — Waiting for head unit…");
         setContentView(statusView);
         handleAccessoryIntent(getIntent());
     }
