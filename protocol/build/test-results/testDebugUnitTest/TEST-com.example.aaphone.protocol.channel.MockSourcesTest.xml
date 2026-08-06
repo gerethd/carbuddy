@@ -1,9 +1,0 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<testsuite name="com.example.aaphone.protocol.channel.MockSourcesTest" tests="3" skipped="0" failures="0" errors="0" timestamp="2026-08-06T22:33:18.266Z" hostname="Gereths-MacBook-Pro.local" time="0.005">
-  <properties/>
-  <testcase name="mockMediaSourceStartsPlayingAndRespondsToPause" classname="com.example.aaphone.protocol.channel.MockSourcesTest" time="0.001"/>
-  <testcase name="mockMessagingSourceReturnsSeededIncomingMessage" classname="com.example.aaphone.protocol.channel.MockSourcesTest" time="0.0"/>
-  <testcase name="mockNavigationSourceEmitsArrivalAsFinalEvent" classname="com.example.aaphone.protocol.channel.MockSourcesTest" time="0.001"/>
-  <system-out><![CDATA[]]></system-out>
-  <system-err><![CDATA[]]></system-err>
-</testsuite>

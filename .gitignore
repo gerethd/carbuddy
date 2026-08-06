@@ -14,3 +14,8 @@ build/
 .cxx
 .kotlin
 local.properties
+*/*.bin
+build
+protocol/build
+phone/build
+.idea

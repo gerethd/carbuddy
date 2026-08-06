@@ -43,21 +43,19 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         statusView = new TextView(this);
-        // Deliberately garish and maximally unmissable -- rules out any subtle
-        // color/contrast/force-dark cause if this still doesn't show. If THIS
-        // doesn't render, the problem is the Activity/window itself, not the
-        // choice of colors.
-        statusView.setTextColor(Color.WHITE);
-        statusView.setBackgroundColor(Color.RED);
-        statusView.setTextSize(32f);
+        // Explicit color/size/padding rather than relying on inherited theme
+        // defaults -- confirmed working (2026-08-06 debug session: a deliberately
+        // garish red/white/32sp version rendered fine), so kept explicit rather
+        // than reverting to unset/theme-inherited values.
+        statusView.setTextColor(Color.BLACK);
+        statusView.setBackgroundColor(Color.WHITE);
+        statusView.setTextSize(18f);
         statusView.setGravity(Gravity.CENTER);
         statusView.setPadding(32, 32, 32, 32);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            // Rule out Android's force-dark feature reinterpreting our explicit
-            // colors on a device in system dark mode.
             statusView.setForceDarkAllowed(false);
         }
-        statusView.setText("AA PHONE TEST SCREEN — Waiting for head unit…");
+        statusView.setText("Waiting for head unit…");
         setContentView(statusView);
         handleAccessoryIntent(getIntent());
     }
