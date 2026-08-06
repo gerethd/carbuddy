@@ -1,0 +1,141 @@
+package com.example.aaphone.protocol.framing;
+
+import com.example.aaphone.protocol.transport.Transport;
+
+import java.io.ByteArrayOutputStream;
+
+/**
+ * Encodes/decodes AA protocol frames per the confirmed layout in
+ * docs/design/0003-aasdk-protocol-notes.md:
+ * <pre>
+ *   byte 0        channel_id
+ *   byte 1        flags (bit0=FIRST, bit1=LAST, bit2=MessageType::CONTROL, bit3=ENCRYPTED)
+ *   size field    SHORT (2 bytes, big-endian uint16) unless flags is EXACTLY
+ *                 FIRST-without-LAST (0x01), in which case EXTENDED (2-byte
+ *                 frame size + 4-byte big-endian uint32 total message size)
+ *   payload       `size` bytes
+ * </pre>
+ *
+ * Writing only ever produces single-frame BULK messages — the confirmed max
+ * SHORT payload (65535 bytes) comfortably covers everything this app sends
+ * (version/handshake/auth messages are all tiny), so there's no need to
+ * fragment on the way out. Reading DOES reassemble FIRST/MIDDLE/LAST
+ * sequences, since the head unit is free to fragment its own messages to us.
+ */
+public final class FrameCodec {
+
+    private FrameCodec() {
+    }
+
+    /** One physical frame as read off the wire — may be a fragment of a larger logical message. */
+    public static final class PhysicalFrame {
+        public final int channelId;
+        public final boolean firstFragment;
+        public final boolean lastFragment;
+        public final boolean encrypted;
+        public final byte[] payload;
+
+        PhysicalFrame(int channelId, boolean firstFragment, boolean lastFragment, boolean encrypted, byte[] payload) {
+            this.channelId = channelId;
+            this.firstFragment = firstFragment;
+            this.lastFragment = lastFragment;
+            this.encrypted = encrypted;
+            this.payload = payload;
+        }
+    }
+
+    /** A fully reassembled logical message (one or more physical frames concatenated). */
+    public static final class Message {
+        public final int channelId;
+        public final boolean encrypted;
+        public final byte[] payload;
+
+        Message(int channelId, boolean encrypted, byte[] payload) {
+            this.channelId = channelId;
+            this.encrypted = encrypted;
+            this.payload = payload;
+        }
+    }
+
+    /** Writes a single-frame (BULK), plain (unencrypted) message: 2-byte big-endian MessageId + body. */
+    public static void writePlainMessage(Transport transport, int channelId, int messageId, byte[] body) {
+        byte[] payload = new byte[2 + body.length];
+        payload[0] = (byte) ((messageId >> 8) & 0xFF);
+        payload[1] = (byte) (messageId & 0xFF);
+        System.arraycopy(body, 0, payload, 2, body.length);
+        writeBulkFrame(transport, channelId, false, payload);
+    }
+
+    /** Writes a single-frame (BULK) message with an already-framed payload (e.g. raw TLS handshake bytes). */
+    public static void writeBulkFrame(Transport transport, int channelId, boolean encrypted, byte[] payload) {
+        if (payload.length > 0xFFFF) {
+            throw new IllegalArgumentException(
+                "payload of " + payload.length + " bytes exceeds the 65535-byte SHORT frame limit"
+                    + " -- fragmentation on write isn't implemented, see FrameCodec's class javadoc");
+        }
+        int flags = 0x01 | 0x02 | (encrypted ? 0x08 : 0); // BULK = FIRST|LAST
+        byte[] frame = new byte[4 + payload.length];
+        frame[0] = (byte) channelId;
+        frame[1] = (byte) flags;
+        frame[2] = (byte) ((payload.length >> 8) & 0xFF);
+        frame[3] = (byte) (payload.length & 0xFF);
+        System.arraycopy(payload, 0, frame, 4, payload.length);
+        transport.write(frame);
+    }
+
+    /** Reads and reassembles one complete logical message, following FIRST/MIDDLE/LAST fragmentation. */
+    public static Message readMessage(Transport transport) {
+        ByteArrayOutputStream accumulated = new ByteArrayOutputStream();
+        int channelId = -1;
+        boolean encrypted = false;
+        while (true) {
+            PhysicalFrame frame = readPhysicalFrame(transport);
+            if (channelId == -1) {
+                channelId = frame.channelId;
+            }
+            encrypted = frame.encrypted;
+            accumulated.writeBytes(frame.payload);
+            if (frame.lastFragment) {
+                break;
+            }
+        }
+        return new Message(channelId, encrypted, accumulated.toByteArray());
+    }
+
+    private static PhysicalFrame readPhysicalFrame(Transport transport) {
+        byte[] header = readFully(transport, 2);
+        int channelId = header[0] & 0xFF;
+        int flags = header[1] & 0xFF;
+        boolean first = (flags & 0x01) != 0;
+        boolean last = (flags & 0x02) != 0;
+        boolean encrypted = (flags & 0x08) != 0;
+
+        // EXTENDED applies only to a true FIRST-without-LAST frame -- BULK (FIRST|LAST)
+        // is a complete single-frame message and uses SHORT. Confirmed against
+        // FrameSize.cpp/MessageInStream.cpp -- see docs/design/0003-aasdk-protocol-notes.md.
+        boolean extended = first && !last;
+
+        byte[] sizeField = readFully(transport, extended ? 6 : 2);
+        int size = ((sizeField[0] & 0xFF) << 8) | (sizeField[1] & 0xFF);
+        // sizeField[2..5] (EXTENDED's total-message-size) isn't needed here since
+        // readMessage() reassembles by watching for the LAST flag, not a running total.
+
+        byte[] payload = readFully(transport, size);
+        return new PhysicalFrame(channelId, first, last, encrypted, payload);
+    }
+
+    private static byte[] readFully(Transport transport, int length) {
+        byte[] buffer = new byte[length];
+        int offset = 0;
+        while (offset < length) {
+            int read = transport.read(buffer, offset, length - offset);
+            if (read <= 0) {
+                throw new IllegalStateException(
+                    "Transport returned " + read + " while reading a frame (" + offset + "/" + length
+                        + " bytes so far) -- connection likely closed");
+            }
+            offset += read;
+        }
+        return buffer;
+    }
+}
