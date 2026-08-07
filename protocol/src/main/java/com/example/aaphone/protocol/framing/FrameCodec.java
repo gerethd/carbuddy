@@ -160,7 +160,7 @@ public final class FrameCodec {
     }
 
     private static ReadBuffer readFully(Transport transport) {
-        byte[] buffer = new byte[65536];
+        byte[] buffer = new byte[131072];
         final AtomicInteger offset = new AtomicInteger(0);
         CompletableFuture<Integer> future = CompletableFuture.supplyAsync(() -> transport.read(buffer, offset.get(), buffer.length));
         int read;
