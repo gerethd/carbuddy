@@ -150,11 +150,11 @@ public final class FrameCodec {
         boolean extended = first & !last;
         int size = ((frameBytes[2] & 0xFF) << 8) | (frameBytes[3] & 0xFF);
         byte[] payload;
-        if (size + 4 > frameReadBuffer.bytesRead) {
-            throw new IllegalStateException("Payload last index of " + (size + 4) + " cannot be greater than the number of bytes read " + frameReadBuffer.bytesRead);
+        int offset = extended? 8 : 4;
+        if (size + offset > frameReadBuffer.bytesRead) {
+            throw new IllegalStateException("Payload last index of " + (size + offset) + " cannot be greater than the number of bytes read " + frameReadBuffer.bytesRead);
         }
-        int offset = extended? 6 : 4;
-        payload= Arrays.copyOfRange(frameBytes, offset, size + 4);
+        payload= Arrays.copyOfRange(frameBytes, offset, size + offset);
 
         return new PhysicalFrame(channelId, first, last, encrypted, payload);
     }
