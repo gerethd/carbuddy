@@ -1,10 +1,14 @@
 package com.example.aaphone.protocol.handshake;
 
+import android.util.Log;
+
+import com.example.aaphone.protocol.channel.MessagingChannel;
 import com.example.aaphone.protocol.framing.FrameCodec;
 import com.example.aaphone.protocol.transport.Transport;
 
 import java.nio.ByteBuffer;
 import java.util.Arrays;
+import java.util.Optional;
 
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLEngine;
@@ -52,8 +56,8 @@ public class AaHandshake {
     /** Runs the full handshake sequence and blocks until it completes or throws. */
     public boolean performHandshake() {
         exchangeVersion();
-        runTlsHandshake();
-        return receiveAuthComplete();
+        return runTlsHandshake();
+
     }
 
     /** The now-established session, for ChannelMultiplexer to use once encrypted traffic starts (task #4). */
@@ -63,7 +67,6 @@ public class AaHandshake {
 
     private void exchangeVersion() {
         FrameCodec.Message request = FrameCodec.readMessage(transport);
-        System.out.println("" + Arrays.toString(request.payload));
         requireMessageId(request.payload, ControlMessageId.VERSION_REQUEST);
         byte[] body = extractBody(request.payload);
         if (body.length != 4) {
@@ -83,7 +86,7 @@ public class AaHandshake {
         FrameCodec.writePlainMessage(transport, CONTROL_CHANNEL, ControlMessageId.VERSION_RESPONSE, response);
     }
 
-    private void runTlsHandshake() {
+    private boolean runTlsHandshake() {
         SSLContext context = AaServerIdentity.buildServerContext();
         sslEngine = context.createSSLEngine();
         sslEngine.setUseClientMode(false); // we are the TLS server -- see class javadoc
@@ -97,18 +100,21 @@ public class AaHandshake {
         ByteBuffer emptyOut = ByteBuffer.allocate(0);
         ByteBuffer netOut = ByteBuffer.allocate(sslEngine.getSession().getPacketBufferSize());
         ByteBuffer netIn = ByteBuffer.allocate(sslEngine.getSession().getPacketBufferSize());
+        netIn.limit(0);
         ByteBuffer appIn = ByteBuffer.allocate(sslEngine.getSession().getApplicationBufferSize());
-
+        Log.d("CarBuddySSLNetIn", Arrays.toString(netIn.array()));
+        Log.d("CarBuddySSLAppIn", Arrays.toString(appIn.array()));
         try {
-            runHandshakeLoop(netIn, netOut, appIn, emptyOut);
+            return runHandshakeLoop(netIn, netOut, appIn, emptyOut);
         } catch (SSLException ex) {
             throw new IllegalStateException("TLS handshake failed: " + ex.getMessage(), ex);
         }
     }
 
-    private void runHandshakeLoop(ByteBuffer netIn, ByteBuffer netOut, ByteBuffer appIn, ByteBuffer emptyOut)
+    private boolean runHandshakeLoop(ByteBuffer netIn, ByteBuffer netOut, ByteBuffer appIn, ByteBuffer emptyOut)
         throws SSLException {
         HandshakeStatus status = sslEngine.getHandshakeStatus();
+        Log.d("CarBuddySSLStatus", status.toString());
         while (status != HandshakeStatus.FINISHED && status != HandshakeStatus.NOT_HANDSHAKING) {
             switch (status) {
                 case NEED_UNWRAP: {
@@ -118,7 +124,8 @@ public class AaHandshake {
                     // simply not advancing `status` below, which re-enters this
                     // same case next iteration with netIn still holding them.
                     if (!netIn.hasRemaining()) {
-                        byte[] handshakeBytes = readHandshakeMessageBody();
+                        FrameCodec.Message message = readHandshakeMessageBody();
+                        byte[] handshakeBytes = extractBody(message.payload);
                         netIn.clear();
                         netIn.put(handshakeBytes);
                         netIn.flip();
@@ -129,7 +136,11 @@ public class AaHandshake {
                         // The TLS record was incomplete -- append another SSL_HANDSHAKE
                         // message's bytes onto what's left in netIn and retry (status
                         // deliberately left as NEED_UNWRAP, see note above).
-                        byte[] moreBytes = readHandshakeMessageBody();
+                        FrameCodec.Message message = readHandshakeMessageBody();
+                        if (readMessageId(message.payload) == ControlMessageId.AUTH_COMPLETE) {
+                            return receiveAuthComplete(message);
+                        }
+                        byte[] moreBytes = message.payload;
                         ByteBuffer grown = ByteBuffer.allocate(netIn.remaining() + moreBytes.length);
                         grown.put(netIn);
                         grown.put(moreBytes);
@@ -165,23 +176,18 @@ public class AaHandshake {
                     throw new IllegalStateException("Unexpected TLS handshake status: " + status);
             }
         }
+        return false;
     }
 
-    private byte[] readHandshakeMessageBody() {
+    private FrameCodec.Message readHandshakeMessageBody() {
         FrameCodec.Message message = FrameCodec.readMessage(transport);
-        requireMessageId(message.payload, ControlMessageId.SSL_HANDSHAKE);
-        return extractBody(message.payload);
+        requireMessageId(message.payload, ControlMessageId.SSL_HANDSHAKE, Optional.of(ControlMessageId.AUTH_COMPLETE));
+        return message;
     }
 
-    private boolean receiveAuthComplete() {
-        FrameCodec.Message message = FrameCodec.readMessage(transport);
-        requireMessageId(message.payload, ControlMessageId.AUTH_COMPLETE);
+
+    private boolean receiveAuthComplete(FrameCodec.Message message) {
         byte[] body = extractBody(message.payload);
-        // AuthCompleteIndication is a one-field protobuf message: required
-        // enums.Status.Enum status = 1. Hand-decoded rather than pulling in a
-        // full protobuf runtime for one two-byte message: tag byte 0x08 (field
-        // 1, varint wire type) followed by a single-byte varint value (OK=0,
-        // FAIL=1 -- both fit in one byte, so no multi-byte varint decoding needed).
         if (body.length != 2 || (body[0] & 0xFF) != 0x08) {
             throw new IllegalStateException("Unexpected AuthCompleteIndication body: " + bytesToHex(body));
         }
@@ -196,18 +202,37 @@ public class AaHandshake {
         return ((payload[0] & 0xFF) << 8) | (payload[1] & 0xFF);
     }
 
+    /**
+     * Removes message id from the payload
+     * @param payload
+     * @return message body without payload
+     */
     private static byte[] extractBody(byte[] payload) {
         byte[] body = new byte[payload.length - 2];
         System.arraycopy(payload, 2, body, 0, body.length);
         return body;
     }
 
-    private static void requireMessageId(byte[] payload, int expected) {
+    /**
+     * Checks for a valid message id, throws exception if
+     * @param payload payload the message id is extracted from
+     * @param expected -- expected message id
+     * @param alternate -- an alternative valid message id
+     */
+    private static void requireMessageId(byte[] payload, int expected, Optional<Integer> alternate) {
         int actual = readMessageId(payload);
-        if (actual != expected) {
+        if (actual != expected && alternate.orElse(-1) != actual) {
             throw new IllegalStateException(
-                "Expected message 0x" + Integer.toHexString(expected) + " but got 0x" + Integer.toHexString(actual));
+                "Expected message 0x" + Integer.toHexString(expected) + " but got 0x"
+                        + Integer.toHexString(actual) + " and " + alternate.orElse(-1));
         }
+    }
+
+    /**
+     * Convenience Method to set default for case of no alternate
+     */
+    private static void requireMessageId(byte[] payload, int expected) {
+        requireMessageId(payload, expected, Optional.empty());
     }
 
     private static String bytesToHex(byte[] bytes) {
