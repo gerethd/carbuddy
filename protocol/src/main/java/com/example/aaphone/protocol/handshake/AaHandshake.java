@@ -10,6 +10,7 @@ import java.nio.ByteBuffer;
 import java.security.cert.Certificate;
 import java.security.cert.X509Certificate;
 import java.util.Arrays;
+import java.util.List;
 import java.util.Optional;
 
 import javax.net.ssl.SSLContext;
@@ -50,10 +51,12 @@ public class AaHandshake {
     private static final int CONTROL_CHANNEL = 0; // ChannelId.CONTROL
 
     private final Transport transport;
+    private final FrameCodec frameCode;
     private SSLEngine sslEngine;
 
-    public AaHandshake(Transport transport) {
+    public AaHandshake(Transport transport, FrameCodec frameCodec) {
         this.transport = transport;
+        this.frameCode = frameCodec;
     }
 
     /** Runs the full handshake sequence and blocks until it completes or throws. */
@@ -69,7 +72,8 @@ public class AaHandshake {
     }
 
     private void exchangeVersion() {
-        FrameCodec.Message request = FrameCodec.readMessage(transport);
+        List<FrameCodec.Message> requestMessages = frameCode.readMessage(transport);
+        FrameCodec.Message request = requestMessages.get(0);
         requireMessageId(request.payload, ControlMessageId.VERSION_REQUEST);
         byte[] body = extractBody(request.payload);
         if (body.length != 4) {
@@ -235,7 +239,8 @@ public class AaHandshake {
     }
 
     private FrameCodec.Message readHandshakeMessageBody() {
-        FrameCodec.Message message = FrameCodec.readMessage(transport);
+        List<FrameCodec.Message> messages = frameCode.readMessage(transport);
+        FrameCodec.Message message = messages.get(0);
         requireMessageId(message.payload, ControlMessageId.SSL_HANDSHAKE, Optional.of(ControlMessageId.AUTH_COMPLETE));
         return message;
     }
@@ -247,7 +252,8 @@ public class AaHandshake {
      * next control message is AUTH_COMPLETE.
      */
     private FrameCodec.Message readAuthCompleteMessage() {
-        FrameCodec.Message message = FrameCodec.readMessage(transport);
+        List<FrameCodec.Message> messages = frameCode.readMessage(transport);
+        FrameCodec.Message message = messages.get(0);
         requireMessageId(message.payload, ControlMessageId.AUTH_COMPLETE);
         return message;
     }

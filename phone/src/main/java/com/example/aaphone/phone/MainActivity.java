@@ -11,6 +11,7 @@ import android.os.Bundle;
 import android.view.Gravity;
 import android.widget.TextView;
 
+import com.example.aaphone.protocol.framing.FrameCodec;
 import com.example.aaphone.protocol.handshake.AaHandshake;
 import com.example.aaphone.protocol.transport.UsbAccessoryTransport;
 
@@ -105,7 +106,7 @@ public class MainActivity extends Activity {
 
     private void runHandshake(UsbAccessoryTransport transport) {
         try {
-            AaHandshake handshake = new AaHandshake(transport);
+            AaHandshake handshake = new AaHandshake(transport, new FrameCodec());
             boolean success = handshake.performHandshake();
             runOnUiThread(() -> statusView.setText(
                 success ? "Handshake complete -- head unit authenticated us (AUTH_COMPLETE=OK)"

@@ -208,6 +208,14 @@ UI's layout, not a channel-level integration. `NavigationChannel` is
 unaffected — `navigation_channel` is confirmed as a first-class channel type
 with its own focus-request/response messages (`NavigationFocusRequestMessage.proto`/`NavigationFocusResponseMessage.proto`, control message ids `0x000d`/`0x000e`).
 
+## Continued in 0005
+
+This doc stops at `AUTH_COMPLETE`. Everything after it — service discovery,
+channel open, the AV/video channel, and the navigation status channel — is in
+`0005-post-handshake-protocol-notes.md`, including the finding that **aasdk
+never implements the navigation status channel at all**, so its message ids
+had to come from the Gearhead APK instead.
+
 ## Still unconfirmed
 
 - Exact accessory-mode string values beyond the manufacturer/model pair we already validated empirically (in `AccessoryModeQueryFactory.cpp`/`AccessoryModeSendStringQuery.cpp`) — not needed for our current milestone since Android's OS drives that exchange, not our app code.

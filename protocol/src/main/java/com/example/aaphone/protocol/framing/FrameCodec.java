@@ -4,14 +4,21 @@ import android.util.Log;
 
 import com.example.aaphone.protocol.transport.Transport;
 
+import org.apache.commons.lang3.ArrayUtils;
+
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.Serializable;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -34,7 +41,10 @@ import java.util.concurrent.atomic.AtomicInteger;
  */
 public final class FrameCodec {
 
-    private FrameCodec() {
+    private final Map<Integer, FrameCodec.Message> partialMessages;
+
+    public FrameCodec() {
+        partialMessages = new HashMap<>();
     }
 
     private static final class ReadBuffer {
@@ -124,39 +134,61 @@ public final class FrameCodec {
     }
 
     /** Reads and reassembles one complete logical message, following FIRST/MIDDLE/LAST fragmentation. */
-    public static Message readMessage(Transport transport) {
+    public List<Message> readMessage(Transport transport) {
         ByteArrayOutputStream accumulator = new ByteArrayOutputStream();
-        PhysicalFrame frame = readPhysicalFrame(transport);
-        Log.d("CarBuddy", frame.serialize());
-        int channelId = frame.channelId;
-        boolean encrypted = frame.encrypted;
-        accumulator.writeBytes(frame.payload);
-        while(!frame.lastFragment){
-            frame = readPhysicalFrame(transport);
-            accumulator.writeBytes(frame.payload);
+        List<Message> messages = new ArrayList<>();
+        List<PhysicalFrame> frames = readPhysicalFrame(transport);
+        AtomicInteger channelId = new AtomicInteger();
+        AtomicBoolean encrypted = new AtomicBoolean();
+        for(int index = 0; index < frames.size(); index++){
+            PhysicalFrame physicalFrame = frames.get(index);
+            channelId.set(physicalFrame.channelId);
+            encrypted.set(physicalFrame.encrypted);
+            Log.d("CarBuddy", physicalFrame.serialize());
+            accumulator.writeBytes(physicalFrame.payload);
+            if (physicalFrame.lastFragment) {
+                if (partialMessages.containsKey(channelId.get()) && partialMessages.get(channelId.get()) != null) {
+                    FrameCodec.Message partialMessage = partialMessages.get(channelId.get());
+                    messages.add(new Message(channelId.get(), encrypted.get(), ArrayUtils.addAll(partialMessage.payload, accumulator.toByteArray())));
+                } else {
+                    messages.add(new Message(channelId.get(), encrypted.get(), accumulator.toByteArray()));
+
+                }
+                channelId = new AtomicInteger();
+                encrypted = new AtomicBoolean();
+                accumulator = new ByteArrayOutputStream();
+            } else {
+                partialMessages.put(channelId.get(), new Message(channelId.get(), encrypted.get(), accumulator.toByteArray()));
+            }
         }
-        return new Message(channelId, encrypted, accumulator.toByteArray());
+
+        return messages;
     }
 
-    private static PhysicalFrame readPhysicalFrame(Transport transport) {
+    private static List<PhysicalFrame> readPhysicalFrame(Transport transport) {
         ReadBuffer frameReadBuffer = readFully(transport);
         byte[] frameBytes = frameReadBuffer.getByteBuffer();
-        int channelId = frameBytes[0] & 0xFF;
-        int flags = frameBytes[1] & 0xFF;
-        boolean first = (flags & 0x01) != 0;
-        boolean last = (flags & 0x02) != 0;
-        boolean encrypted = (flags & 0x08) != 0;
+        List<PhysicalFrame> frames = new ArrayList<>();
+        int offset = 0;
+        while (offset < frameReadBuffer.getBytesRead()) {
+            int channelId = frameBytes[0] & 0xFF;
+            int flags = frameBytes[1] & 0xFF;
+            boolean first = (flags & 0x01) != 0;
+            boolean last = (flags & 0x02) != 0;
+            boolean encrypted = (flags & 0x08) != 0;
 
-        boolean extended = first & !last;
-        int size = ((frameBytes[2] & 0xFF) << 8) | (frameBytes[3] & 0xFF);
-        byte[] payload;
-        int offset = extended? 8 : 4;
-        if (size + offset > frameReadBuffer.getBytesRead()) {
-            throw new IllegalStateException("Payload last index of " + (size + offset) + " cannot be greater than the number of bytes read " + frameReadBuffer.getBytesRead());
+            boolean extended = first & !last;
+            int size = ((frameBytes[2] & 0xFF) << 8) | (frameBytes[3] & 0xFF);
+            byte[] payload;
+            offset = extended ? 8 : 4;
+            if (size + offset > frameReadBuffer.getBytesRead()) {
+                throw new IllegalStateException("Payload last index of " + (size + offset) + " cannot be greater than the number of bytes read " + frameReadBuffer.getBytesRead());
+            }
+            payload = Arrays.copyOfRange(frameBytes, offset, size + offset);
+            frames.add(new PhysicalFrame(channelId, first, last, encrypted, payload));
+            offset = offset + size;
         }
-        payload= Arrays.copyOfRange(frameBytes, offset, size + offset);
-
-        return new PhysicalFrame(channelId, first, last, encrypted, payload);
+        return frames;
     }
 
     private static ReadBuffer readFully(Transport transport) {

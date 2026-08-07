@@ -7,6 +7,16 @@ detailed record of what M0 actually produced, and
 layout, channel ids, message sequence) that replace earlier guesses —
 including a correction to M2/M4 below.
 
+For the current milestone specifically:
+`docs/design/0005-post-handshake-protocol-notes.md` carries the sourced facts
+for everything *after* `AUTH_COMPLETE` (service discovery, channel open, the
+video channel, and the navigation status channel's message ids — the last of
+these recovered from the Gearhead APK, since aasdk does not implement that
+channel at all), and
+`docs/design/0006-navigation-overlay-plan.md` is the sequenced plan for
+getting navigation content onto the head unit, which is what M1's remaining
+tasks (#2, #4, #5, #6) now follow.
+
 Task IDs (`#1`–`#10`) refer to the tracked task list; check there for
 up-to-date status rather than trusting this doc's checkboxes to stay current
 on their own.
@@ -60,18 +70,45 @@ channel) before moving to the next, rather than wiring the full stack at once.
       covered by both a byte-capture regression test
       (`AaHandshakeTest`) and a full real-`SSLEngine` success-path test
       (`AaHandshakeSuccessPathTest`).
-- [ ] **#4** Implement `ChannelMultiplexer.sendMessage`/`pumpOnce` for real —
-      can now reuse `FrameCodec`; also needs to use the handshake's
-      established `SSLEngine` to encrypt/decrypt traffic once
-      `AUTH_COMPLETE` is received.
-- [ ] **#5** Minimal `VideoChannel`/`AudioChannel` — a single static frame and
-      silence are enough; head units require *some* video stream to
-      negotiate before other channels are usable.
+- [ ] **#11** Fix the frame read path before anything multiplexed runs over it
+      (0006 stage A). `FrameCodec` currently drops every frame after the
+      first when one USB transfer carries several, reassembles fragments
+      without regard to channel interleaving, cannot write payloads over
+      65535 bytes, and applies a 5-second per-frame deadline that suits a
+      handshake but not an idle session. None of this bit us during the
+      handshake; all of it bites as soon as more than one channel is open.
+- [ ] **#4** Implement `ChannelMultiplexer.sendMessage`/`pumpOnce` for real
+      (0006 stage B) — can now reuse `FrameCodec`; also needs to use the
+      handshake's established `SSLEngine` to encrypt/decrypt traffic once
+      `AUTH_COMPLETE` is received, with `wrap`/`unwrap` each serialised since
+      `SSLEngine` is not thread-safe. Control-channel dispatch (ping,
+      shutdown, focus) lands here too.
+- [ ] **#12** Add protobuf (`protobuf-javalite` + the Gradle plugin) and
+      implement service discovery (0006 stage C). Hand-rolled bytes stop
+      being viable at `ServiceDiscoveryResponse`. Write our own `.proto`
+      files from 0005's field tables rather than copying aasdk's — same
+      GPLv3 reasoning as 0003. Logging the full response is the first real
+      look at what our head unit actually offers.
+- [ ] **#13** Channel-open plumbing (0006 stage D), then **run the stage E
+      experiment**: find out whether the head unit will accept navigation
+      channel traffic with no video stream running. Neither aasdk nor the
+      Gearhead decompile answers this, and the answer decides whether #5 is
+      required at all. Record the outcome in 0005.
+- [ ] **#5** Minimal `VideoChannel` — a single pre-encoded H.264 keyframe
+      resent on a timer is enough (0006 stage F). **Now conditional on the
+      #13 experiment** rather than assumed: it was listed here on the belief
+      that head units require *some* video stream before other channels are
+      usable, which is plausible but unverified. `AudioChannel` is dropped
+      from this checkpoint — nothing in the navigation path needs it.
 - [ ] **#6** Get the mock `NavigationChannel` content (a real channel type,
-      see 0003) actually rendering on the real head unit. This is the
-      milestone that proves the wire protocol works at all, before any
-      investment in real content integration. `MediaChannel`/`MessagingChannel`
-      are dropped from this checkpoint — see the M2/M4 correction below.
+      see 0003) actually rendering on the real head unit (0006 stage G). This
+      is the milestone that proves the wire protocol works at all, before any
+      investment in real content integration. Message ids are now recovered
+      (0005); remaining work is decoding the `0x8003`/`0x8004` bodies,
+      navigation focus, and growing `NavigationEvent` to match the real wire
+      fields — its current three fields don't.
+      `MediaChannel`/`MessagingChannel` are dropped from this checkpoint —
+      see the M2/M4 correction below.
 - [x] **#10** Confirm the remaining unconfirmed protocol details — done, and
       then some: the TLS cert/key mystery is fully resolved (not just
       "what aasdk's `Cryptor` uses," but what a real head unit/DHU actually
@@ -124,6 +161,12 @@ Same finding as M2: no messaging channel type exists in the protocol either.
 
 ## Known risks (carried from earlier design discussion, not re-litigated here)
 
+- **The recovered certificate expires 2026-10-14** — roughly nine weeks out as
+  of 2026-08-07. Once it lapses the handshake fails and every task above is
+  blocked behind it, with no bypass: the DHU does strict PKIX validation. Two
+  implications: front-load work that needs a live handshake, and separately
+  investigate renewal (see 0003 on the Phenotype-flag-driven `Liyn` path real
+  installs use). Tracked as **#14**.
 - No official certification path; this only ever achieves protocol
   compatibility, not "Android Auto Certified" branding.
 - Google can change protocol details across AA app versions with no

@@ -27,10 +27,11 @@ android {
 dependencies {
     testImplementation libs.junit
     testImplementation libs.mockito.core
+    implementation libs.apache.commons
 }
 
 jacoco {
-    toolVersion = "0.8.12"
+    toolVersion = "0.8.15"
 }
 
 tasks.register('jacocoTestReport', JacocoReport) {
