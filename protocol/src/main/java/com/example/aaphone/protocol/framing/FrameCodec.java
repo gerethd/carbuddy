@@ -37,6 +37,24 @@ public final class FrameCodec {
     private FrameCodec() {
     }
 
+    private static final class ReadBuffer {
+        private final byte[] byteBuffer;
+        private final int bytesRead;
+
+        public ReadBuffer(byte[] byteBuffer, int bytesRead) {
+            this.byteBuffer = byteBuffer;
+            this.bytesRead = bytesRead;
+        }
+
+        public byte[] getByteBuffer() {
+            return byteBuffer;
+        }
+
+        public int getBytesRead() {
+            return bytesRead;
+        }
+    }
+
     /** One physical frame as read off the wire — may be a fragment of a larger logical message. */
     public static final class PhysicalFrame implements Serializable {
         public final int channelId;
@@ -121,27 +139,33 @@ public final class FrameCodec {
     }
 
     private static PhysicalFrame readPhysicalFrame(Transport transport) {
-        byte[] frameBytes = readFully(transport, 2);
+        ReadBuffer frameReadBuffer = readFully(transport);
+        byte[] frameBytes = frameReadBuffer.byteBuffer;
         int channelId = frameBytes[0] & 0xFF;
         int flags = frameBytes[1] & 0xFF;
         boolean first = (flags & 0x01) != 0;
         boolean last = (flags & 0x02) != 0;
         boolean encrypted = (flags & 0x08) != 0;
 
+        boolean extended = first & !last;
         int size = ((frameBytes[2] & 0xFF) << 8) | (frameBytes[3] & 0xFF);
-
-        byte[] payload = Arrays.copyOfRange(frameBytes, 4, size + 4);
+        byte[] payload;
+        if (size + 4 > frameReadBuffer.bytesRead) {
+            throw new IllegalStateException("Payload last index of " + (size + 4) + " cannot be greater than the number of bytes read " + frameReadBuffer.bytesRead);
+        }
+        int offset = extended? 6 : 4;
+        payload= Arrays.copyOfRange(frameBytes, offset, size + 4);
 
         return new PhysicalFrame(channelId, first, last, encrypted, payload);
     }
 
-    private static byte[] readFully(Transport transport, int length) {
+    private static ReadBuffer readFully(Transport transport) {
         byte[] buffer = new byte[65536];
         final AtomicInteger offset = new AtomicInteger(0);
-        CompletableFuture future = CompletableFuture.supplyAsync(() -> transport.read(buffer, offset.get(), buffer.length));
-        int read = 0;
+        CompletableFuture<Integer> future = CompletableFuture.supplyAsync(() -> transport.read(buffer, offset.get(), buffer.length));
+        int read;
         try {
-            read = (int) future.get(5, TimeUnit.SECONDS);
+            read = future.get(5, TimeUnit.SECONDS);
         } catch (TimeoutException ex) {
             try {
                 transport.close();
@@ -154,9 +178,9 @@ public final class FrameCodec {
         }
         if (read <= 0) {
             throw new IllegalStateException(
-                "Transport returned " + read + " while reading a frame (" + offset + "/" + length
-                    + " bytes so far) -- connection likely closed");
+                "Transport returned " + read + " while reading a frame (" + offset
+                        + "/ bytes so far) -- connection likely closed");
         }
-        return buffer;
+        return new ReadBuffer(buffer, read);
     }
 }
