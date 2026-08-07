@@ -11,6 +11,10 @@ import static org.mockito.Mockito.verify;
 
 import android.util.Log;
 
+import android.util.Log;
+
+import org.junit.After;
+import org.junit.Before;
 import org.junit.Test;
 import org.mockito.MockedStatic;
 import org.mockito.Mockito;
@@ -21,6 +25,23 @@ import org.mockito.Mockito;
  * test against the real byte trace captured off the vehicle's head unit.
  */
 public class FrameCodecTest {
+
+    // FrameCodec.readMessage() calls android.util.Log.d(...) for on-device
+    // debugging. Log throws by design in plain JVM unit tests (it's a stub
+    // outside a real Android runtime / Robolectric) -- statically mocking it
+    // for the duration of each test keeps that logging in production code
+    // without breaking these tests.
+    private MockedStatic<Log> logMock;
+
+    @Before
+    public void mockAndroidLog() {
+        logMock = Mockito.mockStatic(Log.class);
+    }
+
+    @After
+    public void closeAndroidLogMock() {
+        logMock.close();
+    }
 
     // The real VERSION_REQUEST captured off the head unit: channel=CONTROL,
     // flags=BULK, size=6, messageId=VERSION_REQUEST(1), body=major(1)/minor(7).
@@ -59,13 +80,14 @@ public class FrameCodecTest {
 
     @Test
     public void readMessageReassemblesAFirstExtendedThenLastShortFragmentPair() {
+        // Two separate chunks -- each fragment is its own physical USB transfer,
+        // matching how the real head unit would actually send a fragmented message.
         // Frame 1: FIRST-only (0x01) -> EXTENDED size field (frameSize=3, totalSize=5), payload 0xAA 0xBB 0xCC
         // Frame 2: LAST-only (0x02) -> SHORT size field (frameSize=2), payload 0xDD 0xEE
-        byte[] input = {
-            0, 1, 0, 3, 0, 0, 0, 5, (byte) 0xAA, (byte) 0xBB, (byte) 0xCC,
-            0, 2, 0, 2, (byte) 0xDD, (byte) 0xEE,
-        };
-        FakeTransport transport = new FakeTransport(input);
+        FakeTransport transport = new FakeTransport(
+            new byte[]{0, 1, 0, 3, 0, 0, 0, 5, (byte) 0xAA, (byte) 0xBB, (byte) 0xCC},
+            new byte[]{0, 2, 0, 2, (byte) 0xDD, (byte) 0xEE}
+        );
 
         FrameCodec.Message message = FrameCodec.readMessage(transport);
 
