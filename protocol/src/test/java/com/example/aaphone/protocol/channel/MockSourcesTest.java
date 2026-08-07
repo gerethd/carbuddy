@@ -43,4 +43,10 @@ public class MockSourcesTest {
         assertEquals(1, messages.size());
         assertEquals("Alex", messages.get(0).getSender());
     }
+
+    @Test
+    public void mockMessagingSourceSendReplyIsANoOp() {
+        // The mock source doesn't track replies -- just confirm it doesn't throw.
+        new MockMessagingSource().sendReply("Alex", "On my way");
+    }
 }

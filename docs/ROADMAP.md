@@ -41,18 +41,25 @@ channel) before moving to the next, rather than wiring the full stack at once.
 - Scope stays at the AA/infotainment USB layer. Do not extend this project
   into the vehicle's CAN bus/OBD-II or other ECUs.
 
-- [ ] **#1** Validate protocol work against the real in-vehicle head unit,
-      stage by stage (see above).
+- [~] **#1** Validate protocol work against the real in-vehicle head unit,
+      stage by stage (see above). **Handshake stage now validated against
+      the Desktop Head Unit (DHU) emulator** — full mutual TLS + real
+      certificate identity + `AUTH_COMPLETE(OK)`, confirmed working
+      end-to-end (see 0003). Still not yet tried against the actual
+      in-vehicle head unit — DHU and real OEM firmware aren't guaranteed to
+      enforce identical certificate checks.
 - [ ] **#2** Port `FrameHeader` byte layout and channel-id numbering from
       aasdk — now sourced, see 0003. Remaining work: fix `ChannelId.java` to
       only hardcode `CONTROL = 0` and read every other channel's real id
       from the head unit's `ServiceDiscoveryResponse` at connection time.
-- [~] **#3** Port `AaHandshake`'s SSL handshake sequence from aasdk —
-      **implemented** (version exchange, TLS handshake via `SSLEngine` in
-      server mode, `AUTH_COMPLETE` receipt), backed by new `FrameCodec`/
-      `AaServerIdentity` classes and unit-tested against the real captured
-      `VERSION_REQUEST` bytes. **Not yet validated end-to-end against the
-      real head unit** — that's the next in-vehicle test.
+- [x] **#3** Port `AaHandshake`'s SSL handshake sequence from aasdk —
+      **implemented and validated end-to-end** (version exchange, mutual
+      TLS handshake via `SSLEngine` in server mode, real `AUTH_COMPLETE(OK)`
+      receipt against the DHU), backed by `FrameCodec`/`AaServerIdentity`
+      (now presenting a real, Google-issued cert/key — see 0003) and
+      covered by both a byte-capture regression test
+      (`AaHandshakeTest`) and a full real-`SSLEngine` success-path test
+      (`AaHandshakeSuccessPathTest`).
 - [ ] **#4** Implement `ChannelMultiplexer.sendMessage`/`pumpOnce` for real —
       can now reuse `FrameCodec`; also needs to use the handshake's
       established `SSLEngine` to encrypt/decrypt traffic once
@@ -65,10 +72,12 @@ channel) before moving to the next, rather than wiring the full stack at once.
       milestone that proves the wire protocol works at all, before any
       investment in real content integration. `MediaChannel`/`MessagingChannel`
       are dropped from this checkpoint — see the M2/M4 correction below.
-- [ ] **#10** Confirm the remaining unconfirmed protocol details (frame-size
-      byte widths, version request byte layout, whether `AUTH_COMPLETE` is
-      encrypted, the actual TLS cert/key `Cryptor` uses) from aasdk's `.cpp`
-      sources — blocks #3/#4 from being real rather than best-effort.
+- [x] **#10** Confirm the remaining unconfirmed protocol details — done, and
+      then some: the TLS cert/key mystery is fully resolved (not just
+      "what aasdk's `Cryptor` uses," but what a real head unit/DHU actually
+      requires and why — see 0003, "TLS trust model and certificate
+      identity"). Frame-size byte widths, version request layout, and
+      `AUTH_COMPLETE` plaintext status were already confirmed earlier.
 
 ## M2 — Real media integration (**corrected** — was a wire channel, isn't one)
 

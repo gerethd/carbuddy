@@ -140,7 +140,7 @@ public final class FrameCodec {
 
     private static PhysicalFrame readPhysicalFrame(Transport transport) {
         ReadBuffer frameReadBuffer = readFully(transport);
-        byte[] frameBytes = frameReadBuffer.byteBuffer;
+        byte[] frameBytes = frameReadBuffer.getByteBuffer();
         int channelId = frameBytes[0] & 0xFF;
         int flags = frameBytes[1] & 0xFF;
         boolean first = (flags & 0x01) != 0;
@@ -151,8 +151,8 @@ public final class FrameCodec {
         int size = ((frameBytes[2] & 0xFF) << 8) | (frameBytes[3] & 0xFF);
         byte[] payload;
         int offset = extended? 8 : 4;
-        if (size + offset > frameReadBuffer.bytesRead) {
-            throw new IllegalStateException("Payload last index of " + (size + offset) + " cannot be greater than the number of bytes read " + frameReadBuffer.bytesRead);
+        if (size + offset > frameReadBuffer.getBytesRead()) {
+            throw new IllegalStateException("Payload last index of " + (size + offset) + " cannot be greater than the number of bytes read " + frameReadBuffer.getBytesRead());
         }
         payload= Arrays.copyOfRange(frameBytes, offset, size + offset);
 

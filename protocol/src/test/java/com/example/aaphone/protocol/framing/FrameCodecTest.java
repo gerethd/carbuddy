@@ -4,6 +4,7 @@ import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertThrows;
+import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.times;
@@ -97,5 +98,41 @@ public class FrameCodecTest {
 
         assertThrows(IllegalArgumentException.class,
             () -> FrameCodec.writeBulkFrame(transport, 0, false, tooBig));
+    }
+
+    @Test
+    public void writeBulkFrameSetsTheEncryptedFlagBitWhenRequested() {
+        FakeTransport transport = new FakeTransport(new byte[0]);
+
+        FrameCodec.writeBulkFrame(transport, 0, /* encrypted= */ true, new byte[]{1});
+
+        byte[] written = transport.writtenBytes();
+        // header: channel(1) flags(1) size(2), then payload -- flags should be
+        // BULK (0x03) | ENCRYPTED (0x08) = 0x0B.
+        assertEquals(0x0B, written[1] & 0xFF);
+    }
+
+    @Test
+    public void readMessageParsesTheEncryptedFlagBit() {
+        // channel=0, flags=BULK|ENCRYPTED(0x0B), size=1, payload=0xAA
+        FakeTransport transport = new FakeTransport(new byte[]{0, 0x0B, 0, 1, (byte) 0xAA});
+        try (MockedStatic<Log> log = mockStatic(Log.class)) {
+            log.when(() -> Log.d(anyString(), anyString())).thenReturn(0);
+
+            FrameCodec.Message message = FrameCodec.readMessage(transport);
+
+            assertTrue(message.encrypted);
+            assertArrayEquals(new byte[]{(byte) 0xAA}, message.payload);
+        }
+    }
+
+    @Test
+    public void readPhysicalFrameRejectsADeclaredSizeLargerThanBytesActuallyRead() {
+        // Declares size=10 but the transport only actually hands back 5 bytes
+        // total (header(4) + 1 payload byte) -- FakeTransport.read() returns
+        // exactly what's in the chunk, so this simulates a truncated/corrupt frame.
+        FakeTransport transport = new FakeTransport(new byte[]{0, 3, 0, 10, (byte) 0xAA});
+
+        assertThrows(IllegalStateException.class, () -> FrameCodec.readMessage(transport));
     }
 }

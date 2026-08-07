@@ -1,5 +1,6 @@
 plugins {
     id 'com.android.library'
+    id 'jacoco'
 }
 android {
     namespace 'com.example.aaphone.protocol'
@@ -13,6 +14,11 @@ android {
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }
+    buildTypes {
+        debug {
+            enableUnitTestCoverage true
+        }
+    }
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_11
         targetCompatibility JavaVersion.VERSION_11
@@ -21,4 +27,29 @@ android {
 dependencies {
     testImplementation libs.junit
     testImplementation libs.mockito.core
+}
+
+jacoco {
+    toolVersion = "0.8.12"
+}
+
+tasks.register('jacocoTestReport', JacocoReport) {
+    dependsOn 'testDebugUnitTest'
+    reports {
+        xml.required = true
+        html.required = true
+    }
+    def fileFilter = [
+        '**/R.class', '**/R$*.class', '**/BuildConfig.*', '**/Manifest*.*',
+        '**/*Test*.*', 'android/**/*.*'
+    ]
+    def javacClasses = fileTree(
+        dir: "$buildDir/intermediates/javac/debug/compileDebugJavaWithJavac/classes",
+        excludes: fileFilter)
+    classDirectories.setFrom(files([javacClasses]))
+    sourceDirectories.setFrom(files(["$projectDir/src/main/java"]))
+    executionData.setFrom(fileTree(dir: buildDir, includes: [
+        'jacoco/testDebugUnitTest.exec',
+        'outputs/unit_test_code_coverage/debugUnitTest/testDebugUnitTest.exec'
+    ]))
 }

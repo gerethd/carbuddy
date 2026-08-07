@@ -7,6 +7,8 @@ import com.example.aaphone.protocol.framing.FrameCodec;
 import com.example.aaphone.protocol.transport.Transport;
 
 import java.nio.ByteBuffer;
+import java.security.cert.Certificate;
+import java.security.cert.X509Certificate;
 import java.util.Arrays;
 import java.util.Optional;
 
@@ -16,6 +18,7 @@ import javax.net.ssl.SSLEngineResult;
 import javax.net.ssl.SSLEngineResult.HandshakeStatus;
 import javax.net.ssl.SSLEngineResult.Status;
 import javax.net.ssl.SSLException;
+import javax.net.ssl.SSLPeerUnverifiedException;
 
 /**
  * Performs the AA control-channel handshake: version negotiation, TLS
@@ -90,7 +93,11 @@ public class AaHandshake {
         SSLContext context = AaServerIdentity.buildServerContext();
         sslEngine = context.createSSLEngine();
         sslEngine.setUseClientMode(false); // we are the TLS server -- see class javadoc
-        sslEngine.setNeedClientAuth(false);
+        // Mutual TLS: the real Gearhead app requires this too (confirmed by
+        // decompiling it -- see docs/design/0003, "TLS trust model, confirmed
+        // from the real Gearhead app"). Without it we never ask the head unit
+        // for its own certificate during the handshake at all.
+        sslEngine.setNeedClientAuth(true);
         try {
             sslEngine.beginHandshake();
         } catch (Exception e) {
@@ -143,7 +150,16 @@ public class AaHandshake {
                         if (readMessageId(message.payload) == ControlMessageId.AUTH_COMPLETE) {
                             return receiveAuthComplete(message);
                         }
-                        byte[] moreBytes = message.payload;
+                        // BUG FIX: this used to take message.payload directly, which
+                        // still has the 2-byte MessageId prefix -- that injected two
+                        // stray bytes into the middle of the reassembled TLS record,
+                        // corrupting it (caught by
+                        // AaHandshakeErrorPathsTest#handshakeSurvivesAClientHelloRecordSplitAcrossTwoHandshakeMessages,
+                        // which failed with "SSLException: Insufficient space in the
+                        // buffer, may be cause by an unexpected end of handshake data"
+                        // before this fix). The initial (non-underflow) branch above
+                        // already does this correctly.
+                        byte[] moreBytes = extractBody(message.payload);
                         ByteBuffer grown = ByteBuffer.allocate(netIn.remaining() + moreBytes.length);
                         grown.put(netIn);
                         grown.put(moreBytes);
@@ -179,7 +195,43 @@ public class AaHandshake {
                     throw new IllegalStateException("Unexpected TLS handshake status: " + status);
             }
         }
-        return false;
+        // The TLS handshake itself completing (FINISHED, or NOT_HANDSHAKING if
+        // this JSSE implementation reports it that way once done) is not the
+        // end of the story: per docs/design/0003, the head unit still owes us
+        // a plain AUTH_COMPLETE control message before the session counts as
+        // authenticated. Previously this method returned false unconditionally
+        // the moment the loop exited here -- meaning even a fully successful
+        // TLS handshake was reported as a failure, because nothing ever read
+        // that final message. The early-return paths above (AUTH_COMPLETE
+        // arriving mid-NEED_UNWRAP, before the TLS handshake itself finishes --
+        // the real failure captured in AaHandshakeTest) are unaffected by this;
+        // this is specifically the success path.
+        logPeerCertificate();
+        return receiveAuthComplete(readAuthCompleteMessage());
+    }
+
+    /**
+     * Logs the head unit's leaf certificate the same way the real Gearhead
+     * app does (see docs/design/0003, "TLS trust model, confirmed from the
+     * real Gearhead app") -- subject DN and serial number -- so a real
+     * capture gives us direct evidence of what the head unit actually sent,
+     * instead of just an opaque AUTH_COMPLETE status code.
+     */
+    private void logPeerCertificate() {
+        try {
+            Certificate[] peerCertificates = sslEngine.getSession().getPeerCertificates();
+            if (peerCertificates.length == 0 || !(peerCertificates[0] instanceof X509Certificate)) {
+                return;
+            }
+            X509Certificate peerCertificate = (X509Certificate) peerCertificates[0];
+            Log.i("CarBuddySSL", "Peer certificate subject name: " + peerCertificate.getSubjectDN().getName());
+            Log.i("CarBuddySSL", "Peer certificate serial number: " + peerCertificate.getSerialNumber());
+        } catch (SSLPeerUnverifiedException e) {
+            // setNeedClientAuth(true) should mean this never happens once we
+            // reach FINISHED, but this is diagnostic logging, not a control
+            // path -- don't let it turn into an unrelated crash.
+            Log.w("CarBuddySSL", "TLS handshake finished but peer did not present a certificate", e);
+        }
     }
 
     private FrameCodec.Message readHandshakeMessageBody() {
@@ -188,6 +240,17 @@ public class AaHandshake {
         return message;
     }
 
+    /**
+     * Reads the message expected right after the TLS handshake itself has
+     * finished. Unlike {@link #readHandshakeMessageBody()}, no SSL_HANDSHAKE
+     * alternate is accepted here -- once TLS is done, the only legitimate
+     * next control message is AUTH_COMPLETE.
+     */
+    private FrameCodec.Message readAuthCompleteMessage() {
+        FrameCodec.Message message = FrameCodec.readMessage(transport);
+        requireMessageId(message.payload, ControlMessageId.AUTH_COMPLETE);
+        return message;
+    }
 
     private boolean receiveAuthComplete(FrameCodec.Message message) {
         byte[] body = extractBody(message.payload);

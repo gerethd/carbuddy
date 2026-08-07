@@ -11,25 +11,28 @@ import org.mockito.MockedStatic;
 import org.mockito.Mockito;
 
 /**
- * Simulates the real SSL handshake exchange captured off a live run (see
- * protocol/src/test/resources/SSLHandshake.log), replaying the exact bytes
- * through {@link AaHandshake#performHandshake()} against a {@link FakeTransport}.
- *
- * This exists to reproduce, deterministically and without needing DHU/a
- * vehicle, the "expected message 0x3 but got 0x4" failure: a real
- * ClientHello arrives (correctly parsed), then a message with MessageId=4
- * (AUTH_COMPLETE) arrives immediately after -- with no evidence in the log
- * of our own ServerHello ever having been sent in between.
+ * Replays a real SSL handshake exchange captured off a live run (see
+ * protocol/src/test/resources/SSLHandshake.log) through
+ * {@link AaHandshake#performHandshake()} against a {@link FakeTransport}: a
+ * real ClientHello arrives (correctly parsed), then a message with
+ * MessageId=4 (AUTH_COMPLETE) arrives immediately after -- with no evidence
+ * in the log of our own ServerHello ever having been sent in between,
+ * meaning the head unit aborted very early in the TLS handshake rather than
+ * completing it.
  *
  * Two things confirmed straight from the captured bytes, not assumed:
  *   - The ClientHello record is well-formed (content-type 0x16, record
  *     version 0x0301, declared length 225 -- matches the captured length
  *     exactly).
  *   - The "AUTH_COMPLETE" body is 11 bytes (tag 0x08 + a 10-byte varint),
- *     not the 2-byte OK(0)/FAIL(1) body {@link AaHandshake} assumes --
- *     decoding the varint gives status = -3, not a simple OK/FAIL value.
- *     receiveAuthComplete()'s `body.length != 2` check is wrong for this
- *     real data regardless of the routing bug below.
+ *     not a simple 2-byte OK(0)/FAIL(1) body -- decoding the varint gives
+ *     status = -3. {@link AaHandshake#receiveAuthComplete} already handles
+ *     this correctly (any non-zero status is treated as failure).
+ *
+ * What this test does NOT tell us: *why* the head unit aborted before
+ * completing the TLS handshake -- that's a question about our TLS server
+ * identity/config (see docs/design/0003, "TLS trust model, confirmed from
+ * the real Gearhead app"), not about this message-parsing path.
  */
 public class AaHandshakeTest {
 
@@ -79,23 +82,14 @@ public class AaHandshakeTest {
     }
 
     /**
-     * Encodes the CORRECT desired behavior, not the current one -- this
-     * should fail until the real bug is fixed, and turn green once it is,
-     * so a fix can be verified without needing DHU/a vehicle:
-     * {@code performHandshake()} should recognize the head unit's
-     * {@code AUTH_COMPLETE} (status = -3, decoded from the real captured
-     * varint -- not the OK/FAIL values we'd assumed) as a controlled,
-     * legitimate "not authenticated" signal and return {@code false} --
-     * not throw an unrelated low-level TLS parsing exception.
-     *
-     * As of writing this currently throws {@code IllegalStateException}
-     * wrapping {@code SSLProtocolException: Input record too big} from
-     * inside {@code sslEngine.unwrap()} instead, for (at least) two
-     * compounding reasons documented elsewhere:
-     *   - the primary NEED_UNWRAP branch has no check for an early
-     *     AUTH_COMPLETE (only the BUFFER_UNDERFLOW retry branch does),
-     *   - receiveAuthComplete() assumes a 2-byte body (tag + 1-byte
-     *     varint); the real body is 11 bytes (tag + a full 10-byte varint).
+     * Confirms the actual (correct) current behavior against the real
+     * captured bytes: {@code performHandshake()} recognizes the head
+     * unit's {@code AUTH_COMPLETE} (status = -3, decoded from the real
+     * captured varint -- not a simple OK/FAIL byte) as a controlled,
+     * legitimate "not authenticated" signal and returns {@code false} --
+     * it does not throw. (An earlier version of this test asserted the
+     * opposite of what its own docstring described -- see git history --
+     * that was a bug in the test, not in {@code performHandshake()}.)
      */
     @Test
     public void performHandshakeRecognizesAuthCompleteAndReturnsFalseForNonOkStatus() {

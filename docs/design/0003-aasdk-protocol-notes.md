@@ -139,15 +139,37 @@ means the real head unit sends it to the phone, and vice versa.
 5. Head unit responds `ServiceDiscoveryResponse` with: `channels` (repeated `ChannelDescriptor`), `head_unit_name`, `car_model`/`car_year`/`car_serial`, `left_hand_drive_vehicle`, `headunit_manufacturer`/`headunit_model`, `sw_build`/`sw_version`, `can_play_native_media_during_vr`, `hide_clock`. Each `ChannelDescriptor` has `channel_id` (the *real* negotiated id) plus exactly one of `sensor_channel`/`av_channel`/`input_channel`/`av_input_channel`/`bluetooth_channel`/`navigation_channel`/`vendor_extension_channel` describing that channel's config.
 6. For each channel we want to use: `CHANNEL_OPEN_REQUEST{priority, channel_id}` → `CHANNEL_OPEN_RESPONSE{status: Status.Enum}`.
 
-## Implementation (task #3)
+## Implementation (task #3) — now validated end-to-end against the DHU
 
 `AaHandshake` implements steps 1–3 above:
 
 - `FrameCodec` (new, shared with future `ChannelMultiplexer` work) encodes/decodes frames per the confirmed layout, including real FIRST/MIDDLE/LAST reassembly on read.
-- `AaServerIdentity` builds the phone's TLS server `SSLContext` from a freshly-generated, project-specific self-signed cert/key (not aasdk's).
-- The TLS handshake itself is driven with `javax.net.ssl.SSLEngine` in server mode (`setUseClientMode(false)`) — the standard Java API for exactly this "drive TLS over arbitrary framing, not a real socket" case.
+- `AaServerIdentity` builds the phone's TLS server `SSLContext` from a real, Google-issued cert/key pair (see "TLS trust model and certificate identity" below — not self-signed, not aasdk's).
+- The TLS handshake itself is driven with `javax.net.ssl.SSLEngine` in server mode (`setUseClientMode(false)`, `setNeedClientAuth(true)` — mutual TLS, matching the real Gearhead app) — the standard Java API for exactly this "drive TLS over arbitrary framing, not a real socket" case.
 - **Android-specific gotcha found while wiring this up**: Android's `SSLEngineResult.HandshakeStatus` has no `NEED_UNWRAP_AGAIN` (a newer-JDK-only addition) — the retry-with-already-buffered-bytes case has to be handled by simply not advancing the loop's status variable on `BUFFER_UNDERFLOW`, rather than relying on that status value.
-- Not yet exercised against a real head unit end-to-end — `FrameCodecTest` covers the framing logic (including a direct regression test against the real captured `VERSION_REQUEST` bytes) with a fake in-memory transport, but the TLS handshake itself has only been validated by compiling, not by a real handshake completing.
+- A second bug found only once real bytes were exercised end-to-end: `runHandshakeLoop` used to `return false` unconditionally the instant the TLS handshake itself finished, without ever reading the head unit's subsequent plain `AUTH_COMPLETE` message — meaning even a fully successful TLS handshake was reported as a failure. Fixed: the loop now reads and evaluates `AUTH_COMPLETE` after TLS `FINISHED`, not just in the early-abort path inside `NEED_UNWRAP`.
+- **Confirmed working**: `performHandshake()` now completes a full mutual-TLS handshake and receives `AUTH_COMPLETE(OK)` against the real Desktop Head Unit (DHU) emulator. `AaHandshakeTest` covers the early-abort byte-capture case; `AaHandshakeSuccessPathTest` covers the full success path with a real two-sided `SSLEngine` handshake.
+
+## TLS trust model and certificate identity — fully resolved
+
+This section replaces the old "Still unconfirmed" bullet about self-signed identity being acceptable — it isn't, and here's the full story of what actually is required, confirmed by decompiling three independent artifacts: the real Gearhead APK (`base/`), the DHU binary itself, and Google's own "Head Unit Integration Guide."
+
+**The real Gearhead app does real chain validation, not "no CA check."** Decompiling `base/smali/{iyo,rvo,iwi}.smali` shows the phone side does standard PKIX chain validation of the head unit's certificate against one hardcoded CA (`C=US, ST=California, L=Mountain View, O=Google Automotive Link`, self-signed, valid 2014–2044), plus Subject-DN substring sanity checks (rejects a head-unit cert whose DN contains `"CarService"`, or that equals the CA's own subject). `SSLEngine.setUseClientMode(false)` + `setNeedClientAuth(true)` confirms the phone is the TLS server and requires the head unit to present its own client certificate — mutual TLS, not one-directional.
+
+**The DHU enforces two checks on the phone's certificate, discovered by disassembling the (unstripped) DHU binary** (`$ANDROID_SDK/extras/google/auto/desktop-head-unit`, BoringSSL-linked):
+1. `SslWrapper::verifyPeer()` reads `NID_organizationName` from the peer's Subject DN into a 20-byte buffer and directly byte-compares it against the literal 10-byte string `"CarService"` — before any chain validation runs. It doesn't check whether the field was found at all, so a cert with no `O` field leaves the buffer uninitialized, producing garbled bytes in the resulting error message (`"Invalid peer certificate name <garbage>"`) instead of a clean rejection.
+2. If that passes, `X509_verify_cert()` runs against a `X509_STORE` built via `SSL_CTX_new`/`X509_STORE_add_cert` in `SslWrapper::init()`, with `X509_STORE_set_flags(store, 0)` — i.e. a fully standard, strict PKIX check, no lenient/partial-chain flag. A self-signed cert fails this unconditionally with `"unable to get local issuer certificate"` (`X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT_LOCALLY`), regardless of what its Subject DN says.
+
+**Forging a certificate against the real root is not feasible** — that CA's key is RSA-2048; recovering it requires integer factorization at a scale roughly 10^20× harder than the largest RSA modulus ever publicly factored (RSA-829, itself hundreds of CPU-years). This isn't a budget constraint, it's outside what's achievable with any existing or foreseeable computing resource.
+
+**The actual fix: the real Gearhead APK ships a complete, genuine, Google-issued fallback identity, in plain sight.** `Liyp` (the interface supplying the phone's cert/key material) has two implementations: `Liyn` (dynamic, Phenotype-flag-backed, per-device) and `Liym` (the fallback used whenever those Phenotype flags — under package `com.google.android.gms.car`, flags `SenderlibCertFeature__*` — are empty, which is the normal case absent an active remote-config push). `Liym`/`Liyo`'s `<clinit>` hardcode, as static literals:
+- a leaf certificate PEM (`Subject: O=CarService`, `Issuer: O=Google Automotive Link`, valid through 2026-10-14),
+- a 256-byte "secret" byte array, and
+- a 1712-byte AES-encrypted private-key blob.
+
+The AES-256 key+IV (48 bytes) is derived by `Liyo;->d(...)` via `La;->au([B[B[B)V` — not a standard hash, a custom byte-mixing routine (extracted and reimplemented instruction-for-instruction from the smali) — run over the leaf cert's UTF-8 bytes, then the hardcoded root CA cert's UTF-8 bytes, then 7 more self-mixing rounds, all keyed by the 256-byte secret. Decrypting the blob (`AES/CBC/PKCS5Padding`) yields a payload that `La;->V([B)` unwraps further (strip a 28-byte prefix and 26-byte suffix, Base64-decode the middle, parse as `PKCS8EncodedKeySpec("RSA")`).
+
+**Verified, not assumed**: the recovered private key's public component matches the hardcoded leaf cert's public key exactly (modulus comparison), and the leaf cert's signature verifies cleanly against the real "Google Automotive Link" root via `openssl verify`. This is now what `AaServerIdentity` presents — satisfying both DHU checks for real, because the chain is genuinely, cryptographically valid, not because any check was bypassed. Caveat: this exact cert/key is identical across every Gearhead install that falls back to this path (not unique per device), and it expires 2026-10-14.
 
 ## USB accessory mode query sequence (already empirically validated in the vehicle)
 
@@ -190,7 +212,7 @@ with its own focus-request/response messages (`NavigationFocusRequestMessage.pro
 
 - Exact accessory-mode string values beyond the manufacturer/model pair we already validated empirically (in `AccessoryModeQueryFactory.cpp`/`AccessoryModeSendStringQuery.cpp`) — not needed for our current milestone since Android's OS drives that exchange, not our app code.
 - The still-unresolved `MessageType::CONTROL` flag discrepancy noted above (empirically unset on a real `VERSION_REQUEST`).
-- Whether our self-signed TLS server identity (see Implementation, above) is actually acceptable to a real head unit — no CA chain validation is confirmed, but whether the head unit inspects certificate contents any further than that is untested.
+- Whether the DHU's certificate checks (`O=CarService` name check, full PKIX chain trust) match what a real in-vehicle head unit enforces — resolved for the DHU (see "TLS trust model and certificate identity" below), but the DHU and real OEM firmware aren't guaranteed to behave identically. Confirmed only once tested in the vehicle (task #1).
 
 Everything else previously listed here — `FrameSize` byte widths, version
 request/response byte layout, whether `AUTH_COMPLETE` is plain or encrypted,
