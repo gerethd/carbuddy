@@ -4,8 +4,16 @@ import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertThrows;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.mockStatic;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+
+import android.util.Log;
 
 import org.junit.Test;
+import org.mockito.MockedStatic;
+import org.mockito.Mockito;
 
 /**
  * Covers {@link FrameCodec} against the confirmed frame layout in
@@ -20,6 +28,8 @@ public class FrameCodecTest {
         0, 3, 0, 6, 0, 1, 0, 1, 0, 7
     };
 
+
+
     @Test
     public void writePlainMessageReproducesTheRealCapturedVersionRequestBytes() {
         FakeTransport transport = new FakeTransport(new byte[0]);
@@ -33,14 +43,18 @@ public class FrameCodecTest {
 
     @Test
     public void readMessageParsesTheRealCapturedVersionRequest() {
+
         FakeTransport transport = new FakeTransport(REAL_VERSION_REQUEST_CAPTURE);
+        try(MockedStatic<Log> log = mockStatic(Log.class)) {
+            log.when(() -> Log.d(anyString(), anyString())).thenReturn(0);
 
-        FrameCodec.Message message = FrameCodec.readMessage(transport);
+            FrameCodec.Message message = FrameCodec.readMessage(transport);
 
-        assertEquals(0, message.channelId);
-        assertFalse(message.encrypted);
-        // payload is messageId(2 bytes) + body -- MessageId=1, body=major(1)/minor(7)
-        assertArrayEquals(new byte[]{0, 1, 0, 1, 0, 7}, message.payload);
+            assertEquals(0, message.channelId);
+            assertFalse(message.encrypted);
+            // payload is messageId(2 bytes) + body -- MessageId=1, body=major(1)/minor(7)
+            assertArrayEquals(new byte[]{0, 1, 0, 1, 0, 7}, message.payload);
+        }
     }
 
     @Test

@@ -12,10 +12,12 @@ appcompat = "1.6.1"
 appProjected = "1.4.0"
 appAutomotive = "1.7.0"
 app = "1.4.0"
+mockito = "5.23.0"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
+mockito-core = {group = "org.mockito", name = "mockito-core", version.ref = "mockito" }
 androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "junitVersion" }
 androidx-espresso-core = { group = "androidx.test.espresso", name = "espresso-core", version.ref = "espressoCore" }
 androidx-lifecycle-runtime-ktx = { group = "androidx.lifecycle", name = "lifecycle-runtime-ktx", version.ref = "lifecycleRuntimeKtx" }
