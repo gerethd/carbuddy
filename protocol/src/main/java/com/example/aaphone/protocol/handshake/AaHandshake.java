@@ -125,6 +125,9 @@ public class AaHandshake {
                     // same case next iteration with netIn still holding them.
                     if (!netIn.hasRemaining()) {
                         FrameCodec.Message message = readHandshakeMessageBody();
+                        if (readMessageId(message.payload) == ControlMessageId.AUTH_COMPLETE) {
+                            return receiveAuthComplete(message);
+                        }
                         byte[] handshakeBytes = extractBody(message.payload);
                         netIn.clear();
                         netIn.put(handshakeBytes);
