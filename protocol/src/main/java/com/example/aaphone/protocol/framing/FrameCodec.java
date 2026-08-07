@@ -107,10 +107,17 @@ public final class FrameCodec {
 
     /** Reads and reassembles one complete logical message, following FIRST/MIDDLE/LAST fragmentation. */
     public static Message readMessage(Transport transport) {
-
+        ByteArrayOutputStream accumulator = new ByteArrayOutputStream();
         PhysicalFrame frame = readPhysicalFrame(transport);
         Log.d("CarBuddy", frame.serialize());
-        return new Message(frame.channelId, frame.encrypted, frame.payload);
+        int channelId = frame.channelId;
+        boolean encrypted = frame.encrypted;
+        accumulator.writeBytes(frame.payload);
+        while(!frame.lastFragment){
+            frame = readPhysicalFrame(transport);
+            accumulator.writeBytes(frame.payload);
+        }
+        return new Message(channelId, encrypted, accumulator.toByteArray());
     }
 
     private static PhysicalFrame readPhysicalFrame(Transport transport) {
@@ -121,13 +128,9 @@ public final class FrameCodec {
         boolean last = (flags & 0x02) != 0;
         boolean encrypted = (flags & 0x08) != 0;
 
-        boolean extended = first && !last;
+        int size = ((frameBytes[2] & 0xFF) << 8) | (frameBytes[3] & 0xFF);
 
-        int size = (frameBytes[2] << 8 & 0xFF) | (frameBytes[3] & 0xFF);
-
-        int messageId = (frameBytes[4] << 8 & 0xFF) | (frameBytes[5] & 0xFF);
-
-        byte[] payload = Arrays.copyOfRange(frameBytes, 6, size + 6);
+        byte[] payload = Arrays.copyOfRange(frameBytes, 4, size + 4);
 
         return new PhysicalFrame(channelId, first, last, encrypted, payload);
     }
@@ -140,6 +143,11 @@ public final class FrameCodec {
         try {
             read = (int) future.get(5, TimeUnit.SECONDS);
         } catch (TimeoutException ex) {
+            try {
+                transport.close();
+            } catch (IOException e) {
+                throw new RuntimeException("Failed to close transport on error.", e);
+            }
             throw new IllegalStateException("Timed out while attempting to read frame from head unit");
         } catch (ExecutionException | InterruptedException e) {
             throw new RuntimeException(e);
