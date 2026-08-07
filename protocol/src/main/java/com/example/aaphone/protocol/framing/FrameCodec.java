@@ -1,8 +1,18 @@
 package com.example.aaphone.protocol.framing;
 
+import android.util.Log;
+
 import com.example.aaphone.protocol.transport.Transport;
 
 import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.Serializable;
+import java.util.Arrays;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Encodes/decodes AA protocol frames per the confirmed layout in
@@ -28,7 +38,7 @@ public final class FrameCodec {
     }
 
     /** One physical frame as read off the wire — may be a fragment of a larger logical message. */
-    public static final class PhysicalFrame {
+    public static final class PhysicalFrame implements Serializable {
         public final int channelId;
         public final boolean firstFragment;
         public final boolean lastFragment;
@@ -40,8 +50,20 @@ public final class FrameCodec {
             this.firstFragment = firstFragment;
             this.lastFragment = lastFragment;
             this.encrypted = encrypted;
-            this.payload = payload;
+            //release any unneeded memory by keeping large buffer allocated
+            ByteArrayOutputStream accumulator = new ByteArrayOutputStream();
+            accumulator.writeBytes(payload);
+            this.payload = accumulator.toByteArray();
+
         }
+
+        String serialize() {
+            return "Channel ID: " + channelId
+                    + " First Fragement: " + firstFragment
+                    + " Last Fragment: " + lastFragment
+                    + " Encrypted: " + encrypted
+                    + " Payload: " + new String(payload);
+         }
     }
 
     /** A fully reassembled logical message (one or more physical frames concatenated). */
@@ -85,56 +107,47 @@ public final class FrameCodec {
 
     /** Reads and reassembles one complete logical message, following FIRST/MIDDLE/LAST fragmentation. */
     public static Message readMessage(Transport transport) {
-        ByteArrayOutputStream accumulated = new ByteArrayOutputStream();
-        int channelId = -1;
-        boolean encrypted = false;
-        while (true) {
-            PhysicalFrame frame = readPhysicalFrame(transport);
-            if (channelId == -1) {
-                channelId = frame.channelId;
-            }
-            encrypted = frame.encrypted;
-            accumulated.writeBytes(frame.payload);
-            if (frame.lastFragment) {
-                break;
-            }
-        }
-        return new Message(channelId, encrypted, accumulated.toByteArray());
+
+        PhysicalFrame frame = readPhysicalFrame(transport);
+        Log.d("CarBuddy", frame.serialize());
+        return new Message(frame.channelId, frame.encrypted, frame.payload);
     }
 
     private static PhysicalFrame readPhysicalFrame(Transport transport) {
-        byte[] header = readFully(transport, 2);
-        int channelId = header[0] & 0xFF;
-        int flags = header[1] & 0xFF;
+        byte[] frameBytes = readFully(transport, 2);
+        int channelId = frameBytes[0] & 0xFF;
+        int flags = frameBytes[1] & 0xFF;
         boolean first = (flags & 0x01) != 0;
         boolean last = (flags & 0x02) != 0;
         boolean encrypted = (flags & 0x08) != 0;
 
-        // EXTENDED applies only to a true FIRST-without-LAST frame -- BULK (FIRST|LAST)
-        // is a complete single-frame message and uses SHORT. Confirmed against
-        // FrameSize.cpp/MessageInStream.cpp -- see docs/design/0003-aasdk-protocol-notes.md.
         boolean extended = first && !last;
 
-        byte[] sizeField = readFully(transport, extended ? 6 : 2);
-        int size = ((sizeField[0] & 0xFF) << 8) | (sizeField[1] & 0xFF);
-        // sizeField[2..5] (EXTENDED's total-message-size) isn't needed here since
-        // readMessage() reassembles by watching for the LAST flag, not a running total.
+        int size = (frameBytes[2] << 8 & 0xFF) | (frameBytes[3] & 0xFF);
 
-        byte[] payload = readFully(transport, size);
+        int messageId = (frameBytes[4] << 8 & 0xFF) | (frameBytes[5] & 0xFF);
+
+        byte[] payload = Arrays.copyOfRange(frameBytes, 6, size + 6);
+
         return new PhysicalFrame(channelId, first, last, encrypted, payload);
     }
 
     private static byte[] readFully(Transport transport, int length) {
-        byte[] buffer = new byte[length];
-        int offset = 0;
-        while (offset < length) {
-            int read = transport.read(buffer, offset, length - offset);
-            if (read <= 0) {
-                throw new IllegalStateException(
-                    "Transport returned " + read + " while reading a frame (" + offset + "/" + length
-                        + " bytes so far) -- connection likely closed");
-            }
-            offset += read;
+        byte[] buffer = new byte[65536];
+        final AtomicInteger offset = new AtomicInteger(0);
+        CompletableFuture future = CompletableFuture.supplyAsync(() -> transport.read(buffer, offset.get(), buffer.length));
+        int read = 0;
+        try {
+            read = (int) future.get(5, TimeUnit.SECONDS);
+        } catch (TimeoutException ex) {
+            throw new IllegalStateException("Timed out while attempting to read frame from head unit");
+        } catch (ExecutionException | InterruptedException e) {
+            throw new RuntimeException(e);
+        }
+        if (read <= 0) {
+            throw new IllegalStateException(
+                "Transport returned " + read + " while reading a frame (" + offset + "/" + length
+                    + " bytes so far) -- connection likely closed");
         }
         return buffer;
     }

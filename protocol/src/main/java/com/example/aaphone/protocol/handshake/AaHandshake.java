@@ -4,6 +4,7 @@ import com.example.aaphone.protocol.framing.FrameCodec;
 import com.example.aaphone.protocol.transport.Transport;
 
 import java.nio.ByteBuffer;
+import java.util.Arrays;
 
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLEngine;
@@ -62,6 +63,7 @@ public class AaHandshake {
 
     private void exchangeVersion() {
         FrameCodec.Message request = FrameCodec.readMessage(transport);
+        System.out.println("" + Arrays.toString(request.payload));
         requireMessageId(request.payload, ControlMessageId.VERSION_REQUEST);
         byte[] body = extractBody(request.payload);
         if (body.length != 4) {
@@ -99,8 +101,8 @@ public class AaHandshake {
 
         try {
             runHandshakeLoop(netIn, netOut, appIn, emptyOut);
-        } catch (SSLException e) {
-            throw new IllegalStateException("TLS handshake failed", e);
+        } catch (SSLException ex) {
+            throw new IllegalStateException("TLS handshake failed: " + ex.getMessage(), ex);
         }
     }
 

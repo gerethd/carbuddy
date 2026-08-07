@@ -19,3 +19,4 @@ build
 protocol/build
 phone/build
 .idea
+/base/

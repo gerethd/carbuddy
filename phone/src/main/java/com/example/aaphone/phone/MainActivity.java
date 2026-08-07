@@ -1,5 +1,6 @@
 package com.example.aaphone.phone;
 
+import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.content.Intent;
 import android.graphics.Color;
@@ -12,6 +13,8 @@ import android.widget.TextView;
 
 import com.example.aaphone.protocol.handshake.AaHandshake;
 import com.example.aaphone.protocol.transport.UsbAccessoryTransport;
+
+import java.io.IOException;
 
 /**
  * Milestone M1 entry point. On receiving a {@code USB_ACCESSORY_ATTACHED}
@@ -38,7 +41,9 @@ import com.example.aaphone.protocol.transport.UsbAccessoryTransport;
 public class MainActivity extends Activity {
 
     private TextView statusView;
+    private UsbAccessoryTransport currentTransport;
 
+    @SuppressLint("ObsoleteSdkInt")
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -87,12 +92,12 @@ public class MainActivity extends Activity {
         // any of the status text below ever had a chance to show. That's the
         // most likely explanation if status updates ever appear to "do nothing".
         try {
-            UsbAccessoryTransport transport = new UsbAccessoryTransport(this, accessory);
+            currentTransport = new UsbAccessoryTransport(this, accessory);
 
             statusView.setText("Opened accessory: " + accessory.getManufacturer() + " / " + accessory.getModel()
-                + " (connected=" + transport.isConnected() + ") -- starting handshake...");
+                + " (connected=" + currentTransport.isConnected() + ") -- starting handshake...");
 
-            new Thread(() -> runHandshake(transport), "aa-handshake").start();
+            new Thread(() -> runHandshake(currentTransport), "aa-handshake").start();
         } catch (Exception e) {
             statusView.setText("Failed to open accessory: " + e);
         }
@@ -110,5 +115,20 @@ public class MainActivity extends Activity {
         } catch (Exception e) {
             runOnUiThread(() -> statusView.setText("Handshake failed: " + e));
         }
+    }
+
+    @Override
+    protected void onDestroy() {
+
+        if (currentTransport != null) {
+            try {
+                currentTransport.close();
+            } catch(IOException ex) {
+                throw new RuntimeException("Failed to clode currentTransport: " + ex.getLocalizedMessage());
+            }finally {
+                currentTransport = null;
+            }
+        }
+        super.onDestroy();
     }
 }
