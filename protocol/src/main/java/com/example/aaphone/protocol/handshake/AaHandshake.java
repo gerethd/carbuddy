@@ -191,7 +191,7 @@ public class AaHandshake {
 
     private boolean receiveAuthComplete(FrameCodec.Message message) {
         byte[] body = extractBody(message.payload);
-        if (body.length != 2 || (body[0] & 0xFF) != 0x08) {
+        if (body.length > 11 || (body[0] & 0xFF) != 0x08) {
             throw new IllegalStateException("Unexpected AuthCompleteIndication body: " + bytesToHex(body));
         }
         int statusValue = body[1] & 0xFF;
