@@ -4,6 +4,8 @@ import static org.junit.Assert.assertFalse;
 
 import android.util.Log;
 
+import com.example.aaphone.protocol.framing.FrameCodec;
+
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -99,7 +101,7 @@ public class AaHandshakeTest {
             AUTH_COMPLETE_LIKE_FRAME
         );
 
-        boolean result = new AaHandshake(transport).performHandshake();
+        boolean result = new AaHandshake(transport, new FrameCodec()).performHandshake();
 
         assertFalse("status -3 is not OK(0); performHandshake() should report failure, not throw", result);
     }

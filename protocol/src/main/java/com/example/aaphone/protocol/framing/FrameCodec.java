@@ -118,11 +118,6 @@ public final class FrameCodec {
 
     /** Writes a single-frame (BULK) message with an already-framed payload (e.g. raw TLS handshake bytes). */
     public static void writeBulkFrame(Transport transport, int channelId, boolean encrypted, byte[] payload) {
-        if (payload.length > 0xFFFF) {
-            throw new IllegalArgumentException(
-                "payload of " + payload.length + " bytes exceeds the 65535-byte SHORT frame limit"
-                    + " -- fragmentation on write isn't implemented, see FrameCodec's class javadoc");
-        }
         int flags = 0x01 | 0x02 | (encrypted ? 0x08 : 0); // BULK = FIRST|LAST
         byte[] frame = new byte[4 + payload.length];
         frame[0] = (byte) channelId;

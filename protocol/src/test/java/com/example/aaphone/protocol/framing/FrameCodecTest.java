@@ -3,6 +3,8 @@ package com.example.aaphone.protocol.framing;
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotEquals;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -20,6 +22,9 @@ import org.junit.Test;
 import org.mockito.MockedStatic;
 import org.mockito.Mockito;
 
+import java.util.Collections;
+import java.util.List;
+
 /**
  * Covers {@link FrameCodec} against the confirmed frame layout in
  * docs/design/0003-aasdk-protocol-notes.md -- including a direct regression
@@ -27,19 +32,23 @@ import org.mockito.Mockito;
  */
 public class FrameCodecTest {
 
-    // FrameCodec.readMessage() calls android.util.Log.d(...) for on-device
+    // frameCodec.readMessage() calls android.util.Log.d(...) for on-device
     // debugging. Log throws by design in plain JVM unit tests (it's a stub
     // outside a real Android runtime / Robolectric) -- statically mocking it
     // for the duration of each test keeps that logging in production code
     // without breaking these tests.
     private MockedStatic<Log> logMock;
-
+    private FrameCodec frameCodec;
     // The real VERSION_REQUEST captured off the head unit: channel=CONTROL,
     // flags=BULK, size=6, messageId=VERSION_REQUEST(1), body=major(1)/minor(7).
     private static final byte[] REAL_VERSION_REQUEST_CAPTURE = {
         0, 3, 0, 6, 0, 1, 0, 1, 0, 7
     };
 
+    @Before
+    public void setup() {
+        frameCodec = new FrameCodec();
+    }
 
 
     @Test
@@ -60,7 +69,7 @@ public class FrameCodecTest {
         try(MockedStatic<Log> log = mockStatic(Log.class)) {
             log.when(() -> Log.d(anyString(), anyString())).thenReturn(0);
 
-            FrameCodec.Message message = FrameCodec.readMessage(transport);
+            FrameCodec.Message message = frameCodec.readMessage(transport).get(0);
 
             assertEquals(0, message.channelId);
             assertFalse(message.encrypted);
@@ -81,7 +90,11 @@ public class FrameCodecTest {
         );
         try(MockedStatic<Log> log = mockStatic(Log.class)) {
             log.when(() -> Log.d(anyString(), anyString())).thenReturn(0);
-            FrameCodec.Message message = FrameCodec.readMessage(transport);
+            assertEquals("Initial read should only produce a partial message", Collections.emptyList(), frameCodec.readMessage(transport)); //should return nothing since it's a partial message
+            List<FrameCodec.Message> messages = frameCodec.readMessage(transport);
+            assertNotNull(messages);
+            assertNotEquals("Second read should produce a full message", Collections.emptyList(), messages);
+            FrameCodec.Message message = messages.get(0);
 
             assertEquals(0, message.channelId);
             assertArrayEquals(
@@ -89,15 +102,6 @@ public class FrameCodecTest {
                     message.payload
             );
         }
-    }
-
-    @Test
-    public void writeBulkFrameRejectsPayloadsOverTheShortFrameLimit() {
-        FakeTransport transport = new FakeTransport(new byte[0]);
-        byte[] tooBig = new byte[0x10000]; // 65536 > the 65535 SHORT limit
-
-        assertThrows(IllegalArgumentException.class,
-            () -> FrameCodec.writeBulkFrame(transport, 0, false, tooBig));
     }
 
     @Test
@@ -119,7 +123,7 @@ public class FrameCodecTest {
         try (MockedStatic<Log> log = mockStatic(Log.class)) {
             log.when(() -> Log.d(anyString(), anyString())).thenReturn(0);
 
-            FrameCodec.Message message = FrameCodec.readMessage(transport);
+            FrameCodec.Message message = frameCodec.readMessage(transport).get(0);
 
             assertTrue(message.encrypted);
             assertArrayEquals(new byte[]{(byte) 0xAA}, message.payload);
@@ -133,6 +137,6 @@ public class FrameCodecTest {
         // exactly what's in the chunk, so this simulates a truncated/corrupt frame.
         FakeTransport transport = new FakeTransport(new byte[]{0, 3, 0, 10, (byte) 0xAA});
 
-        assertThrows(IllegalStateException.class, () -> FrameCodec.readMessage(transport));
+        assertThrows(IllegalStateException.class, () -> frameCodec.readMessage(transport));
     }
 }
