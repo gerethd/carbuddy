@@ -16,6 +16,8 @@ import com.example.aaphone.protocol.handshake.AaHandshake;
 import com.example.aaphone.protocol.transport.UsbAccessoryTransport;
 
 import java.io.IOException;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ThreadPoolExecutor;
 
 /**
  * Milestone M1 entry point. On receiving a {@code USB_ACCESSORY_ATTACHED}
@@ -97,8 +99,10 @@ public class MainActivity extends Activity {
 
             statusView.setText("Opened accessory: " + accessory.getManufacturer() + " / " + accessory.getModel()
                 + " (connected=" + currentTransport.isConnected() + ") -- starting handshake...");
+            ScheduledExecutorService    () -> {
+                runHandshake(currentTransport);
 
-            new Thread(() -> runHandshake(currentTransport), "aa-handshake").start();
+            }, "aa-handshake").start();
         } catch (Exception e) {
             statusView.setText("Failed to open accessory: " + e);
         }
